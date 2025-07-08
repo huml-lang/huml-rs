@@ -427,22 +427,22 @@ fn parse_null(input: &str) -> IResult<&str, HumlValue> {
 }
 
 // Parse scalar value
-fn parse_scalar(input: &str) -> IResult<&str, HumlValue> {
+pub fn parse_scalar(input: &str) -> IResult<&str, HumlValue> {
     alt((parse_string, parse_number, parse_boolean, parse_null)).parse(input)
 }
 
 // Parse empty list
-fn parse_empty_list(input: &str) -> IResult<&str, HumlValue> {
+pub fn parse_empty_list(input: &str) -> IResult<&str, HumlValue> {
     value(HumlValue::List(Vec::new()), tag("[]")).parse(input)
 }
 
 // Parse empty dict
-fn parse_empty_dict(input: &str) -> IResult<&str, HumlValue> {
+pub fn parse_empty_dict(input: &str) -> IResult<&str, HumlValue> {
     value(HumlValue::Dict(HashMap::new()), tag("{}")).parse(input)
 }
 
 // Parse inline list
-fn parse_inline_list(input: &str) -> IResult<&str, HumlValue> {
+pub fn parse_inline_list(input: &str) -> IResult<&str, HumlValue> {
     // First parse a scalar, then check if it's followed by a comma
     let (input, first_item) = parse_scalar(input)?;
 
@@ -494,7 +494,7 @@ fn parse_dict_pair(input: &str) -> IResult<&str, (String, HumlValue)> {
 }
 
 // Parse inline dict
-fn parse_inline_dict(input: &str) -> IResult<&str, HumlValue> {
+pub fn parse_inline_dict(input: &str) -> IResult<&str, HumlValue> {
     map(
         separated_list1((char(','), space1), parse_dict_pair),
         |pairs| {
@@ -768,7 +768,7 @@ fn parse_version(input: &str) -> IResult<&str, Option<String>> {
 }
 
 // Parse document root
-fn parse_document_root(input: &str) -> IResult<&str, HumlValue> {
+pub fn parse_document_root(input: &str) -> IResult<&str, HumlValue> {
     let (input, _) = skip_empty_and_comments(input)?;
 
     // Check if the document starts with a list item
@@ -783,12 +783,7 @@ fn parse_document_root(input: &str) -> IResult<&str, HumlValue> {
 
     // Check if it's a simple scalar value (single line)
     if !input.contains('\n') {
-        // Try scalar first
-        if let Ok((remaining, value)) = parse_scalar(input) {
-            return Ok((remaining, value));
-        }
-
-        // Then try to parse as inline dict/list
+        // Try inline dict/list first
         if let Ok((remaining, value)) = alt((
             parse_inline_dict,
             parse_inline_list,
@@ -797,6 +792,11 @@ fn parse_document_root(input: &str) -> IResult<&str, HumlValue> {
         ))
         .parse(input)
         {
+            return Ok((remaining, value));
+        }
+
+        // Then try scalar
+        if let Ok((remaining, value)) = parse_scalar(input) {
             return Ok((remaining, value));
         }
     }
@@ -812,6 +812,8 @@ pub fn parse_huml(input: &str) -> IResult<&str, HumlDocument> {
     let (input, _) = skip_empty_and_comments(input)?;
     Ok((input, HumlDocument { version, root }))
 }
+
+pub mod serde;
 
 #[cfg(test)]
 mod tests {
@@ -1655,6 +1657,117 @@ database::
                 }
             }
             Err(e) => panic!("Failed to parse kitchensink HUML: {:?}", e),
+        }
+    }
+
+    #[test]
+    fn test_nested_dict_format() {
+        // Test the exact format that's failing in the serde example
+        let input = r#"database::
+  host: "localhost"
+  port: 5432
+  name: "myapp_db"
+  ssl: false"#;
+
+        match parse_huml(input) {
+            Ok((remaining, doc)) => {
+                println!("Remaining: '{}'", remaining);
+                println!("Document: {:#?}", doc);
+
+                if let HumlValue::Dict(dict) = doc.root {
+                    assert_eq!(dict.len(), 1);
+
+                    if let Some(HumlValue::Dict(db)) = dict.get("database") {
+                        assert_eq!(
+                            db.get("host"),
+                            Some(&HumlValue::String("localhost".to_string()))
+                        );
+                        assert_eq!(
+                            db.get("port"),
+                            Some(&HumlValue::Number(HumlNumber::Integer(5432)))
+                        );
+                        assert_eq!(
+                            db.get("name"),
+                            Some(&HumlValue::String("myapp_db".to_string()))
+                        );
+                        assert_eq!(db.get("ssl"), Some(&HumlValue::Boolean(false)));
+                    } else {
+                        panic!("Expected database dict, got {:?}", dict.get("database"));
+                    }
+                } else {
+                    panic!("Expected root dict, got {:?}", doc.root);
+                }
+            }
+            Err(e) => panic!("Failed to parse nested dict: {:?}", e),
+        }
+    }
+
+    #[test]
+    fn test_full_serde_example() {
+        // Test the full example from serde_example.rs that's failing
+        let input = r#"app_name: "My Awesome App"
+port: 8080
+debug: true
+features:: "auth", "logging", "metrics", "caching"
+database::
+  host: "localhost"
+  port: 5432
+  name: "myapp_db"
+  ssl: false"#;
+
+        match parse_huml(input) {
+            Ok((remaining, doc)) => {
+                println!("Remaining: '{}'", remaining);
+                println!("Document: {:#?}", doc);
+
+                if let HumlValue::Dict(dict) = doc.root {
+                    // Should have 5 keys: app_name, port, debug, features, database
+                    println!("Dict keys: {:?}", dict.keys().collect::<Vec<_>>());
+
+                    assert_eq!(
+                        dict.get("app_name"),
+                        Some(&HumlValue::String("My Awesome App".to_string()))
+                    );
+                    assert_eq!(
+                        dict.get("port"),
+                        Some(&HumlValue::Number(HumlNumber::Integer(8080)))
+                    );
+                    assert_eq!(dict.get("debug"), Some(&HumlValue::Boolean(true)));
+
+                    // Check features list
+                    if let Some(HumlValue::List(features)) = dict.get("features") {
+                        assert_eq!(features.len(), 4);
+                        assert_eq!(features[0], HumlValue::String("auth".to_string()));
+                        assert_eq!(features[1], HumlValue::String("logging".to_string()));
+                        assert_eq!(features[2], HumlValue::String("metrics".to_string()));
+                        assert_eq!(features[3], HumlValue::String("caching".to_string()));
+                    } else {
+                        panic!("Expected features list, got {:?}", dict.get("features"));
+                    }
+
+                    // Check database dict
+                    if let Some(HumlValue::Dict(db)) = dict.get("database") {
+                        assert_eq!(
+                            db.get("host"),
+                            Some(&HumlValue::String("localhost".to_string()))
+                        );
+                        assert_eq!(
+                            db.get("port"),
+                            Some(&HumlValue::Number(HumlNumber::Integer(5432)))
+                        );
+                        assert_eq!(
+                            db.get("name"),
+                            Some(&HumlValue::String("myapp_db".to_string()))
+                        );
+                        assert_eq!(db.get("ssl"), Some(&HumlValue::Boolean(false)));
+                    } else {
+                        panic!("Expected database dict, got {:?}", dict.get("database"));
+                    }
+                } else {
+                    panic!("Expected root dict, got {:?}", doc.root);
+                }
+            }
+            Err(e) => panic!("Failed to parse full serde example: {:?}", e),
         }
     }
 }
