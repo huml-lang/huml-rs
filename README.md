@@ -41,6 +41,7 @@ This parser aims to implement the [HUML specification v0.1.0](https://huml.pages
             ```
 *   **Nested Structures:** Supports deeply nested dictionaries and lists.
 *   **Complex Keys:** Keys can be unquoted, or quoted to include spaces and special characters.
+*   **Serde Support:** Deserialize HUML directly into Rust structs.
 
 ## Usage
 
@@ -48,13 +49,16 @@ Add this to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-huml = "0.1.0" # Replace with the desired version
+huml-rs = "0.1.0" # Replace with the desired version
+serde = { version = "1.0", features = ["derive"] }
 ```
+
+### Low-level Parsing
 
 Then, you can parse a HUML string like this:
 
 ```rust
-use huml::parse_huml;
+use huml_rs::parse_huml;
 
 fn main() {
     let huml_string = r#"
@@ -76,6 +80,39 @@ debug_mode: true
         }
         Err(e) => {
             eprintln!("Failed to parse HUML: {:?}", e);
+        }
+    }
+}
+```
+
+### Deserializing with Serde
+
+You can also deserialize HUML into your own Rust structs using `serde`.
+
+```rust
+use huml_rs::serde::from_str;
+use serde::Deserialize;
+
+#[derive(Deserialize, Debug)]
+struct Config {
+    app_name: String,
+    version: String,
+    debug_mode: bool,
+}
+
+fn main() {
+    let huml_string = r#"
+app_name: "My Awesome App"
+version: "1.0"
+debug_mode: true
+    "#;
+
+    match from_str::<Config>(huml_string) {
+        Ok(config) => {
+            println!("Successfully deserialized config: {:?}", config);
+        }
+        Err(e) => {
+            eprintln!("Failed to deserialize HUML: {}", e);
         }
     }
 }
