@@ -72,7 +72,7 @@ fn skip_empty_and_comments(input: &str) -> IResult<&str, ()> {
 // Parse simple quoted string
 fn parse_quoted_string(input: &str) -> IResult<&str, String> {
     let (input, _) = char('"').parse(input)?;
-    let mut result = String::new();
+    let mut result = String::with_capacity(input.len() / 2);
     let mut remaining = input;
 
     while !remaining.is_empty() {
@@ -133,7 +133,7 @@ fn parse_multiline_string_preserve(input: &str) -> IResult<&str, String> {
     let (input, _) = tag("```").parse(input)?;
     let (input, _) = line_ending.parse(input)?;
 
-    let mut result = String::new();
+    let mut result = String::with_capacity(input.len() / 4);
     let mut remaining = input;
     let mut first_line = true;
 
@@ -190,7 +190,7 @@ fn parse_multiline_string_strip(input: &str) -> IResult<&str, String> {
     let (input, _) = tag("\"\"\"").parse(input)?;
     let (input, _) = line_ending.parse(input)?;
 
-    let mut lines = Vec::new();
+    let mut lines = Vec::with_capacity(16);
     let mut remaining = input;
 
     while !remaining.is_empty() {
@@ -277,24 +277,23 @@ fn parse_hex_number(input: &str) -> IResult<&str, i64> {
 // Helper to recognize a float pattern (with decimal point or exponent)
 fn is_float_pattern(input: &str) -> bool {
     let mut chars = input.chars();
+    let mut has_digits = false;
+    let mut has_decimal = false;
+    let mut has_exponent = false;
 
     // Skip optional sign
     if let Some(c) = chars.next() {
         if c == '+' || c == '-' {
-            // Continue
+            // Continue with next char
         } else if c.is_ascii_digit() {
-            // Put it back by not advancing
+            has_digits = true;
         } else {
             return false;
         }
     }
 
-    // Look for digits, then decimal point or exponent
-    let mut has_digits = false;
-    let mut has_decimal = false;
-    let mut has_exponent = false;
-
-    for c in input.chars() {
+    // Single pass through remaining characters
+    for c in chars {
         if c.is_ascii_digit() || c == '_' {
             has_digits = true;
         } else if c == '.' && !has_decimal && !has_exponent {
@@ -337,7 +336,7 @@ fn parse_float(input: &str) -> IResult<&str, f64> {
     ))
     .parse(input)?;
 
-    let mut num_str = String::new();
+    let mut num_str = String::with_capacity(32);
     if let Some(s) = sign {
         num_str.push(s);
     }
@@ -370,7 +369,7 @@ fn parse_integer(input: &str) -> IResult<&str, i64> {
     let (input, sign) = opt(alt((char('+'), char('-')))).parse(input)?;
     let (input, digits) = take_while1(|c: char| c.is_ascii_digit() || c == '_').parse(input)?;
 
-    let mut num_str = String::new();
+    let mut num_str = String::with_capacity(32);
     if let Some(s) = sign {
         num_str.push(s);
     }
@@ -428,7 +427,7 @@ fn parse_null(input: &str) -> IResult<&str, HumlValue> {
 
 // Parse scalar value
 pub fn parse_scalar(input: &str) -> IResult<&str, HumlValue> {
-    alt((parse_string, parse_number, parse_boolean, parse_null)).parse(input)
+    alt((parse_boolean, parse_null, parse_number, parse_string)).parse(input)
 }
 
 // Parse empty list
@@ -455,12 +454,13 @@ pub fn parse_inline_list(input: &str) -> IResult<&str, HumlValue> {
     }
 
     // Parse the rest of the items
-    let (input, mut remaining_items) =
+    let (input, remaining_items) =
         many0(preceded((char(','), space1), parse_scalar)).parse(input)?;
 
-    // Combine all items
-    let mut items = vec![first_item];
-    items.append(&mut remaining_items);
+    // Combine all items with pre-allocated capacity
+    let mut items = Vec::with_capacity(1 + remaining_items.len());
+    items.push(first_item);
+    items.extend(remaining_items);
 
     Ok((input, HumlValue::List(items)))
 }
@@ -498,7 +498,7 @@ pub fn parse_inline_dict(input: &str) -> IResult<&str, HumlValue> {
     map(
         separated_list1((char(','), space1), parse_dict_pair),
         |pairs| {
-            let mut dict = HashMap::new();
+            let mut dict = HashMap::with_capacity(pairs.len());
             for (key, value) in pairs {
                 dict.insert(key, value);
             }
@@ -569,7 +569,7 @@ fn parse_list_item(input: &str, expected_indent: usize) -> IResult<&str, HumlVal
 
 // Parse multi-line list
 fn parse_multiline_list(input: &str, expected_indent: usize) -> IResult<&str, HumlValue> {
-    let mut items = Vec::new();
+    let mut items = Vec::with_capacity(8);
     let mut remaining = input;
 
     loop {
@@ -675,7 +675,7 @@ fn parse_dict_entry(input: &str, expected_indent: usize) -> IResult<&str, (Strin
 
 // Parse multi-line dict
 fn parse_multiline_dict(input: &str, expected_indent: usize) -> IResult<&str, HumlValue> {
-    let mut dict = HashMap::new();
+    let mut dict = HashMap::with_capacity(8);
     let mut remaining = input;
 
     loop {
