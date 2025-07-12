@@ -1,6 +1,7 @@
 use criterion::{Criterion, black_box, criterion_group, criterion_main};
 use huml_rs::serde::Result;
 
+#[allow(dead_code)]
 fn benchmark_serde_parse(c: &mut Criterion) {
     #[derive(Debug, serde::Deserialize)]
     struct Config {

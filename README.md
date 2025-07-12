@@ -132,6 +132,37 @@ To run tests:
 cargo test
 ```
 
+### Standard HUML Test Suite
+
+This parser includes the official HUML test suite as a git submodule, which contains centrally maintained test cases that all HUML parser implementations should pass. These tests help ensure compatibility and correctness across different parsers.
+
+To initialize the test submodule:
+```sh
+git submodule init
+git submodule update
+```
+
+The standard tests include:
+- **Assertion Tests**: 174+ test cases covering valid and invalid HUML syntax
+- **Document Tests**: Complete HUML documents with expected JSON output for validation
+
+To run only the standard tests:
+```sh
+cargo test standard_tests
+```
+
+**Current Status**: 
+- ✅ Document parsing test passes (with acceptable multiline string differences)
+- ⚠️ 121/174 assertion tests fail (revealing areas for parser improvement)
+
+The failing assertion tests highlight strict validation rules that need implementation, such as:
+- Trailing whitespace detection
+- Strict comment formatting requirements  
+- Enhanced error handling for malformed input
+- Precise indentation validation
+
+These tests serve as a roadmap for improving parser compliance with the HUML specification.
+
 To run benchmarks:
 ```sh
 cargo bench

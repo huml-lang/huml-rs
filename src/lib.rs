@@ -814,6 +814,8 @@ pub fn parse_huml(input: &str) -> IResult<&str, HumlDocument> {
 }
 
 pub mod serde;
+#[cfg(test)]
+pub mod standard_tests;
 
 #[cfg(test)]
 mod tests {
