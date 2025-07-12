@@ -49,17 +49,17 @@ pub enum Error {
     /// Parse error from the underlying HUML parser
     ParseError(String),
     /// Type conversion error
-    InvalidType(String),
+    InvalidType(&'static str),
     /// Missing field error
-    MissingField(String),
+    MissingField(&'static str),
     /// Unknown field error
-    UnknownField(String),
+    UnknownField(&'static str),
 }
 
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Error::Message(msg) => write!(f, "{}", msg),
+            Error::Message(msg) => f.write_str(msg),
             Error::ParseError(msg) => write!(f, "Parse error: {}", msg),
             Error::InvalidType(msg) => write!(f, "Invalid type: {}", msg),
             Error::MissingField(field) => write!(f, "Missing field: {}", field),
@@ -93,73 +93,59 @@ impl Deserializer {
     /// Create a deserializer from HUML text
     pub fn from_str(input: &str) -> Result<Self> {
         let trimmed = input.trim();
-        // Strategy: try parsing approaches in order of specificity
-
-        // 1. First try individual value types (scalars, inline lists/dicts)
-        if let Ok(value) = Self::parse_value(trimmed) {
-            return Ok(value);
+        if trimmed.is_empty() {
+            return Ok(Self::new(HumlValue::String(String::new())));
         }
 
-        // 2. Then try to parse as document root (handles multiline content)
-        match crate::parse_document_root(trimmed) {
-            Ok(("", root)) => return Ok(Self::new(root)),
-            Ok((remaining, root)) => {
-                // If there's remaining input, check if it's just whitespace
-                if remaining.trim().is_empty() {
-                    return Ok(Self::new(root));
-                }
-                // Otherwise continue to next approach
-            }
-            Err(_) => {
-                // Continue to next approach
+        // Fast path: try complete document parsing first (most common case)
+        if let Ok(("", document)) = parse_huml(trimmed) {
+            return Ok(Self::new(document.root));
+        }
+        if let Ok((remaining, document)) = parse_huml(trimmed) {
+            if remaining.trim().is_empty() {
+                return Ok(Self::new(document.root));
             }
         }
 
-        // 3. Finally try to parse as a complete document
-        match parse_huml(trimmed) {
-            Ok(("", document)) => Ok(Self::new(document.root)),
-            Ok((remaining, document)) => {
-                // If there's remaining input, check if it's just whitespace
-                if remaining.trim().is_empty() {
-                    Ok(Self::new(document.root))
-                } else {
-                    Err(Error::ParseError(format!(
-                        "Unexpected remaining input: {}",
-                        remaining
-                    )))
-                }
+        // Fallback: try document root parsing
+        if let Ok(("", root)) = crate::parse_document_root(trimmed) {
+            return Ok(Self::new(root));
+        }
+        if let Ok((remaining, root)) = crate::parse_document_root(trimmed) {
+            if remaining.trim().is_empty() {
+                return Ok(Self::new(root));
             }
-            Err(_) => Err(Error::ParseError(format!(
+        }
+
+        // Last resort: try individual value types
+        Self::parse_value(trimmed).or_else(|_| {
+            Err(Error::ParseError(format!(
                 "Unable to parse HUML content: {}",
                 trimmed
-            ))),
-        }
+            )))
+        })
     }
 
     /// Parse individual value types (scalars, lists, inline dicts)
     fn parse_value(input: &str) -> Result<Self> {
-        // Try parsing as scalar first
+        // Check for empty containers first (fastest check)
+        if input == "[]" {
+            return Ok(Self::new(HumlValue::List(Vec::new())));
+        }
+        if input == "{}" {
+            return Ok(Self::new(HumlValue::Dict(std::collections::HashMap::new())));
+        }
+
+        // Try scalar parsing (most common case)
         if let Ok(("", value)) = crate::parse_scalar(input) {
             return Ok(Self::new(value));
         }
 
-        // Try parsing as inline list
+        // Try inline structures
         if let Ok(("", value)) = crate::parse_inline_list(input) {
             return Ok(Self::new(value));
         }
-
-        // Try parsing as inline dict
         if let Ok(("", value)) = crate::parse_inline_dict(input) {
-            return Ok(Self::new(value));
-        }
-
-        // Try parsing as empty list
-        if let Ok(("", value)) = crate::parse_empty_list(input) {
-            return Ok(Self::new(value));
-        }
-
-        // Try parsing as empty dict
-        if let Ok(("", value)) = crate::parse_empty_dict(input) {
             return Ok(Self::new(value));
         }
 
@@ -242,7 +228,7 @@ impl<'de> de::Deserializer<'de> for Deserializer {
     {
         match self.value {
             HumlValue::Boolean(b) => visitor.visit_bool(b),
-            _ => Err(Error::InvalidType("Expected boolean".to_string())),
+            _ => Err(Error::InvalidType("Expected boolean")),
         }
     }
 
@@ -274,7 +260,7 @@ impl<'de> de::Deserializer<'de> for Deserializer {
         match self.value {
             HumlValue::Number(HumlNumber::Integer(i)) => visitor.visit_i64(i),
             HumlValue::Number(HumlNumber::Float(f)) => visitor.visit_i64(f as i64),
-            _ => Err(Error::InvalidType("Expected integer".to_string())),
+            _ => Err(Error::InvalidType("Expected integer")),
         }
     }
 
@@ -308,17 +294,17 @@ impl<'de> de::Deserializer<'de> for Deserializer {
                 if i >= 0 {
                     visitor.visit_u64(i as u64)
                 } else {
-                    Err(Error::InvalidType("Expected positive integer".to_string()))
+                    Err(Error::InvalidType("Expected positive integer"))
                 }
             }
             HumlValue::Number(HumlNumber::Float(f)) => {
                 if f >= 0.0 {
                     visitor.visit_u64(f as u64)
                 } else {
-                    Err(Error::InvalidType("Expected positive number".to_string()))
+                    Err(Error::InvalidType("Expected positive number"))
                 }
             }
-            _ => Err(Error::InvalidType("Expected unsigned integer".to_string())),
+            _ => Err(Error::InvalidType("Expected unsigned integer")),
         }
     }
 
@@ -344,7 +330,7 @@ impl<'de> de::Deserializer<'de> for Deserializer {
                     visitor.visit_f64(f64::NEG_INFINITY)
                 }
             }
-            _ => Err(Error::InvalidType("Expected float".to_string())),
+            _ => Err(Error::InvalidType("Expected float")),
         }
     }
 
@@ -357,10 +343,10 @@ impl<'de> de::Deserializer<'de> for Deserializer {
                 let mut chars = s.chars();
                 match (chars.next(), chars.next()) {
                     (Some(c), None) => visitor.visit_char(c),
-                    _ => Err(Error::InvalidType("Expected single character".to_string())),
+                    _ => Err(Error::InvalidType("Expected single character")),
                 }
             }
-            _ => Err(Error::InvalidType("Expected string".to_string())),
+            _ => Err(Error::InvalidType("Expected string")),
         }
     }
 
@@ -370,7 +356,7 @@ impl<'de> de::Deserializer<'de> for Deserializer {
     {
         match self.value {
             HumlValue::String(s) => visitor.visit_string(s),
-            _ => Err(Error::InvalidType("Expected string".to_string())),
+            _ => Err(Error::InvalidType("Expected string")),
         }
     }
 
@@ -387,7 +373,7 @@ impl<'de> de::Deserializer<'de> for Deserializer {
     {
         match self.value {
             HumlValue::String(s) => visitor.visit_byte_buf(s.into_bytes()),
-            _ => Err(Error::InvalidType("Expected string".to_string())),
+            _ => Err(Error::InvalidType("Expected string")),
         }
     }
 
@@ -414,7 +400,7 @@ impl<'de> de::Deserializer<'de> for Deserializer {
     {
         match self.value {
             HumlValue::Null => visitor.visit_unit(),
-            _ => Err(Error::InvalidType("Expected null".to_string())),
+            _ => Err(Error::InvalidType("Expected null")),
         }
     }
 
@@ -441,7 +427,7 @@ impl<'de> de::Deserializer<'de> for Deserializer {
                 let seq = SeqDeserializer::new(list);
                 visitor.visit_seq(seq)
             }
-            _ => Err(Error::InvalidType("Expected list".to_string())),
+            _ => Err(Error::InvalidType("Expected list")),
         }
     }
 
@@ -473,7 +459,7 @@ impl<'de> de::Deserializer<'de> for Deserializer {
                 let map = MapDeserializer::new(dict);
                 visitor.visit_map(map)
             }
-            _ => Err(Error::InvalidType("Expected dict".to_string())),
+            _ => Err(Error::InvalidType("Expected dict")),
         }
     }
 
@@ -507,14 +493,10 @@ impl<'de> de::Deserializer<'de> for Deserializer {
                     let (key, value) = dict.into_iter().next().unwrap();
                     visitor.visit_enum(EnumDeserializer::new(key, value))
                 } else {
-                    Err(Error::InvalidType(
-                        "Expected single-key dict for enum".to_string(),
-                    ))
+                    Err(Error::InvalidType("Expected single-key dict for enum"))
                 }
             }
-            _ => Err(Error::InvalidType(
-                "Expected string or dict for enum".to_string(),
-            )),
+            _ => Err(Error::InvalidType("Expected string or dict for enum")),
         }
     }
 
@@ -536,12 +518,15 @@ impl<'de> de::Deserializer<'de> for Deserializer {
 /// Sequence deserializer for HUML lists
 struct SeqDeserializer {
     iter: std::vec::IntoIter<HumlValue>,
+    len: usize,
 }
 
 impl SeqDeserializer {
     fn new(list: Vec<HumlValue>) -> Self {
+        let len = list.len();
         Self {
             iter: list.into_iter(),
+            len,
         }
     }
 }
@@ -561,19 +546,26 @@ impl<'de> de::SeqAccess<'de> for SeqDeserializer {
             None => Ok(None),
         }
     }
+
+    fn size_hint(&self) -> Option<usize> {
+        Some(self.len)
+    }
 }
 
 /// Map deserializer for HUML dicts
 struct MapDeserializer {
     iter: std::collections::hash_map::IntoIter<String, HumlValue>,
     value: Option<HumlValue>,
+    len: usize,
 }
 
 impl MapDeserializer {
     fn new(dict: std::collections::HashMap<String, HumlValue>) -> Self {
+        let len = dict.len();
         Self {
             iter: dict.into_iter(),
             value: None,
+            len,
         }
     }
 }
@@ -604,8 +596,12 @@ impl<'de> de::MapAccess<'de> for MapDeserializer {
                 let deserializer = Deserializer::new(value);
                 seed.deserialize(deserializer)
             }
-            None => Err(Error::InvalidType("Value is missing".to_string())),
+            None => Err(Error::InvalidType("Value is missing")),
         }
+    }
+
+    fn size_hint(&self) -> Option<usize> {
+        Some(self.len)
     }
 }
 
@@ -652,9 +648,7 @@ impl<'de> de::VariantAccess<'de> for VariantDeserializer {
     fn unit_variant(self) -> Result<()> {
         match self.value {
             HumlValue::Null => Ok(()),
-            _ => Err(Error::InvalidType(
-                "Expected null for unit variant".to_string(),
-            )),
+            _ => Err(Error::InvalidType("Expected null for unit variant")),
         }
     }
 
@@ -675,9 +669,7 @@ impl<'de> de::VariantAccess<'de> for VariantDeserializer {
                 let seq = SeqDeserializer::new(list);
                 visitor.visit_seq(seq)
             }
-            _ => Err(Error::InvalidType(
-                "Expected list for tuple variant".to_string(),
-            )),
+            _ => Err(Error::InvalidType("Expected list for tuple variant")),
         }
     }
 
@@ -690,9 +682,7 @@ impl<'de> de::VariantAccess<'de> for VariantDeserializer {
                 let map = MapDeserializer::new(dict);
                 visitor.visit_map(map)
             }
-            _ => Err(Error::InvalidType(
-                "Expected dict for struct variant".to_string(),
-            )),
+            _ => Err(Error::InvalidType("Expected dict for struct variant")),
         }
     }
 }
