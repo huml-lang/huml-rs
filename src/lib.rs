@@ -69,6 +69,8 @@ fn parse_empty_or_comment(input: &str) -> IResult<&str, ()> {
         // Empty line with optional spaces - we'll check for trailing spaces elsewhere
         map((take_while(|c| c == ' '), line_ending), |_| ()),
         map((parse_comment, line_ending), |_| ()),
+        // Comment at end of file (no line ending)
+        map(parse_comment, |_| ()),
     ))
     .parse(input)
 }
@@ -846,6 +848,10 @@ fn parse_dict_entry(input: &str, expected_indent: usize) -> IResult<&str, (Strin
             parse_inline_dict,
         ))
         .parse(input)?;
+
+        // Handle optional comment after the value
+        let (input, _) = opt(preceded(space1, parse_comment)).parse(input)?;
+
         Ok((input, (key, value)))
     }
 }
@@ -1004,6 +1010,13 @@ pub fn parse_document_root(input: &str) -> IResult<&str, HumlValue> {
         return parse_string(input);
     }
 
+    // Check for empty containers first (before newline check)
+    if input.starts_with("[]") || input.starts_with("{}") {
+        if let Ok((remaining, value)) = alt((parse_empty_list, parse_empty_dict)).parse(input) {
+            return Ok((remaining, value));
+        }
+    }
+
     // Check if it's a simple scalar value (single line)
     if !input.contains('\n') {
         // Try inline dict/list first
@@ -1021,6 +1034,11 @@ pub fn parse_document_root(input: &str) -> IResult<&str, HumlValue> {
         // Then try scalar
         if let Ok((remaining, value)) = parse_scalar(input) {
             return Ok((remaining, value));
+        }
+
+        // If it contains a colon but not comma, it's likely a single-line dict entry
+        if input.contains(':') && !input.contains(',') {
+            return parse_multiline_dict(input, 0);
         }
     }
 
@@ -1092,10 +1110,14 @@ pub fn parse_huml(input: &str) -> IResult<&str, HumlDocument> {
 
     // Check if there's any remaining content after parsing (should be error for root scalars)
     if !remaining.trim().is_empty() {
-        return Err(nom::Err::Error(nom::error::Error::new(
-            remaining,
-            nom::error::ErrorKind::Verify,
-        )));
+        // Allow trailing newlines for containers at root
+        let trimmed = remaining.trim();
+        if !trimmed.is_empty() {
+            return Err(nom::Err::Error(nom::error::Error::new(
+                remaining,
+                nom::error::ErrorKind::Verify,
+            )));
+        }
     }
 
     Ok((remaining, HumlDocument { version, root }))
