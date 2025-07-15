@@ -913,17 +913,25 @@ fn parse_multiline_value(input: &str, expected_indent: usize) -> IResult<&str, H
         }
         let (new_input, indent) = parse_indent(new_input)?;
 
+        // Look for content at expected_indent or expected_indent + 1
+        // This handles both nested lists (at expected_indent) and dicts (at expected_indent + 1)
         if indent == expected_indent {
             if new_input.starts_with('-') {
                 return parse_multiline_list(input, expected_indent);
             } else {
                 return parse_multiline_dict(input, expected_indent);
             }
+        } else if indent == expected_indent + 1 {
+            if new_input.starts_with('-') {
+                return parse_multiline_list(input, expected_indent + 1);
+            } else {
+                return parse_multiline_dict(input, expected_indent + 1);
+            }
         } else if indent < expected_indent {
             // We've reached content at a lower indentation level
             break;
         } else {
-            // Continue looking for content at the expected level
+            // Continue looking for content at a deeper level
             peek_input = new_input;
         }
     }
