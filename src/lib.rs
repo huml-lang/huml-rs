@@ -86,10 +86,12 @@ fn parse_quoted_string(input: &str) -> IResult<&str, String> {
     let (input, _) = char('"').parse(input)?;
     let mut result = String::with_capacity(input.len() / 2);
     let mut remaining = input;
+    let mut found_closing_quote = false;
 
     while !remaining.is_empty() {
         if remaining.starts_with('"') {
             remaining = &remaining[1..];
+            found_closing_quote = true;
             break;
         } else if remaining.starts_with('\\') {
             if remaining.len() < 2 {
@@ -131,9 +133,42 @@ fn parse_quoted_string(input: &str) -> IResult<&str, String> {
                     result.push('/');
                     remaining = &remaining[2..];
                 }
-                Some(c) => {
-                    result.push(c);
-                    remaining = &remaining[2..];
+                Some('u') => {
+                    // Unicode escape sequence: \uXXXX
+                    if remaining.len() < 6 {
+                        return Err(nom::Err::Error(nom::error::Error::new(
+                            input,
+                            nom::error::ErrorKind::Escaped,
+                        )));
+                    }
+                    let hex_chars = &remaining[2..6];
+                    match u32::from_str_radix(hex_chars, 16) {
+                        Ok(code_point) => match char::from_u32(code_point) {
+                            Some(ch) => {
+                                result.push(ch);
+                                remaining = &remaining[6..];
+                            }
+                            None => {
+                                return Err(nom::Err::Error(nom::error::Error::new(
+                                    input,
+                                    nom::error::ErrorKind::Escaped,
+                                )));
+                            }
+                        },
+                        Err(_) => {
+                            return Err(nom::Err::Error(nom::error::Error::new(
+                                input,
+                                nom::error::ErrorKind::Escaped,
+                            )));
+                        }
+                    }
+                }
+                Some(_) => {
+                    // Invalid escape sequence
+                    return Err(nom::Err::Error(nom::error::Error::new(
+                        input,
+                        nom::error::ErrorKind::Escaped,
+                    )));
                 }
                 None => {
                     return Err(nom::Err::Error(nom::error::Error::new(
@@ -156,25 +191,36 @@ fn parse_quoted_string(input: &str) -> IResult<&str, String> {
         }
     }
 
+    if !found_closing_quote {
+        return Err(nom::Err::Error(nom::error::Error::new(
+            input,
+            nom::error::ErrorKind::Char,
+        )));
+    }
+
     Ok((remaining, result))
 }
 
 // Parse multi-line string with ``` (preserve spaces)
-fn parse_multiline_string_preserve(input: &str) -> IResult<&str, String> {
+fn parse_multiline_string_preserve(input: &str, base_indent: usize) -> IResult<&str, String> {
     let (input, _) = tag("```").parse(input)?;
     let (input, _) = line_ending.parse(input)?;
 
     let mut result = String::with_capacity(input.len() / 4);
     let mut remaining = input;
     let mut first_line = true;
+    let base_indent_spaces = base_indent * 2; // Convert indent level to spaces
 
     while !remaining.is_empty() {
-        // Try to parse a line
-        let (line_end, line_content) =
+        // Count leading spaces on this line
+        let spaces_count = remaining.chars().take_while(|&c| c == ' ').count();
+
+        // Parse the full line
+        let (line_end, full_line) =
             not_line_ending::<&str, nom::error::Error<&str>>.parse(remaining)?;
 
-        // Check if this line is the closing ```
-        if line_content.trim() == "```" {
+        // Check if this is the closing ```
+        if spaces_count == base_indent_spaces && full_line.trim() == "```" {
             if let Ok((after_newline, _)) =
                 line_ending::<&str, nom::error::Error<&str>>.parse(line_end)
             {
@@ -184,18 +230,17 @@ fn parse_multiline_string_preserve(input: &str) -> IResult<&str, String> {
             }
         }
 
-        // Process the line content
-        // If it starts with at least 2 spaces, remove them (minimum indentation)
-        if line_content.len() >= 2 && line_content.starts_with("  ") {
-            if !first_line {
-                result.push('\n');
-            }
-            result.push_str(&line_content[2..]);
+        // For content lines, remove the base indent + 2 spaces
+        if !first_line {
+            result.push('\n');
+        }
+
+        // Calculate how many spaces to skip (base indent + 2 for content)
+        let skip_spaces = (base_indent_spaces + 2).min(spaces_count);
+        if full_line.len() >= skip_spaces {
+            result.push_str(&full_line[skip_spaces..]);
         } else {
-            if !first_line {
-                result.push('\n');
-            }
-            result.push_str(line_content);
+            result.push_str(full_line);
         }
 
         first_line = false;
@@ -217,33 +262,42 @@ fn parse_multiline_string_preserve(input: &str) -> IResult<&str, String> {
 }
 
 // Parse multi-line string with """ (strip spaces)
-fn parse_multiline_string_strip(input: &str) -> IResult<&str, String> {
+fn parse_multiline_string_strip(input: &str, base_indent: usize) -> IResult<&str, String> {
     let (input, _) = tag("\"\"\"").parse(input)?;
     let (input, _) = line_ending.parse(input)?;
 
-    let mut lines = Vec::with_capacity(16);
+    let mut result = String::with_capacity(input.len() / 4);
     let mut remaining = input;
+    let mut first_line = true;
+    let base_indent_spaces = base_indent * 2; // Convert indent level to spaces
 
     while !remaining.is_empty() {
-        // Try to parse a line
-        let (line_end, line_content) =
+        // Count leading spaces on this line
+        let spaces_count = remaining.chars().take_while(|&c| c == ' ').count();
+
+        // Parse the full line
+        let (line_end, full_line) =
             not_line_ending::<&str, nom::error::Error<&str>>.parse(remaining)?;
 
-        // Check if this line is the closing """
-        if line_content.trim() == "\"\"\"" {
+        // Check if this is the closing """
+        if spaces_count == base_indent_spaces && full_line.trim() == "\"\"\"" {
             if let Ok((after_newline, _)) =
                 line_ending::<&str, nom::error::Error<&str>>.parse(line_end)
             {
-                return Ok((after_newline, lines.join("\n")));
+                return Ok((after_newline, result));
             } else {
-                return Ok((line_end, lines.join("\n")));
+                return Ok((line_end, result));
             }
         }
 
-        // Process the line content by stripping leading/trailing spaces
-        let trimmed = line_content.trim();
+        // Process the line content - strip all leading and trailing whitespace
+        let trimmed = full_line.trim();
         if !trimmed.is_empty() {
-            lines.push(trimmed.to_string());
+            if !first_line {
+                result.push('\n');
+            }
+            result.push_str(trimmed);
+            first_line = false;
         }
 
         // Continue to next line
@@ -264,9 +318,20 @@ fn parse_multiline_string_strip(input: &str) -> IResult<&str, String> {
 
 // Parse any string
 fn parse_string(input: &str) -> IResult<&str, HumlValue> {
+    alt((map(parse_quoted_string, HumlValue::String),)).parse(input)
+}
+
+// Parse any string format with indentation context
+fn parse_string_with_indent(input: &str, indent: usize) -> IResult<&str, HumlValue> {
     alt((
-        map(parse_multiline_string_preserve, HumlValue::String),
-        map(parse_multiline_string_strip, HumlValue::String),
+        map(
+            move |i| parse_multiline_string_preserve(i, indent),
+            HumlValue::String,
+        ),
+        map(
+            move |i| parse_multiline_string_strip(i, indent),
+            HumlValue::String,
+        ),
         map(parse_quoted_string, HumlValue::String),
     ))
     .parse(input)
@@ -840,7 +905,7 @@ fn parse_dict_entry(input: &str, expected_indent: usize) -> IResult<&str, (Strin
 
         // Parse the value (can be scalar, inline list, inline dict, or multiline string)
         let (input, value) = alt((
-            parse_string, // This handles both regular and multiline strings
+            move |i| parse_string_with_indent(i, expected_indent), // This handles both regular and multiline strings
             parse_empty_list,
             parse_empty_dict,
             parse_scalar,
