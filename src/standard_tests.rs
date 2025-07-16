@@ -200,12 +200,11 @@ mod tests {
             println!("Failed tests: {:?}", failed_tests);
         }
 
-        // Don't fail the entire test suite - these are reference tests that may uncover
-        // edge cases that need to be implemented over time
+        // Fail the test if any assertions failed
         if failed > 0 {
-            println!(
-                "Note: {} assertion tests failed. These are reference tests - see failed cases above.",
-                failed
+            panic!(
+                "{} assertion tests failed. Failed tests: {:?}",
+                failed, failed_tests
             );
         }
     }
@@ -286,8 +285,7 @@ mod tests {
                         serde_json::to_string_pretty(&normalized_actual).unwrap()
                     );
 
-                    println!("\nDocument test failed - structures don't match");
-                    return;
+                    panic!("Document test failed - structures don't match");
                 } else {
                     println!(
                         "✓ Document test passed - HUML and JSON structures match (with acceptable multiline string differences)"
@@ -305,8 +303,7 @@ mod tests {
                     serde_json::to_string_pretty(&normalized_actual).unwrap()
                 );
 
-                println!("\nDocument test failed - structures don't match");
-                return;
+                panic!("Document test failed - structures don't match");
             }
         } else {
             println!("✓ Document test passed - HUML and JSON structures match exactly");

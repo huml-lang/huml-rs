@@ -4,7 +4,7 @@ use nom::{
     bytes::complete::{tag, take_while, take_while1},
     character::complete::{char, line_ending, not_line_ending, space1},
     combinator::{map, opt, value},
-    multi::{many0, separated_list1},
+    multi::many0,
     sequence::preceded,
 };
 use std::collections::HashMap;
@@ -50,15 +50,27 @@ fn parse_comment(input: &str) -> IResult<&str, ()> {
     let (input, _) = take_while(|c| c == ' ').parse(input)?;
     let (input, _) = char('#').parse(input)?;
     let (input, _) = char(' ').parse(input)?;
-    let (input, _) = not_line_ending.parse(input)?;
+    let (input, comment_text) = not_line_ending.parse(input)?;
+
+    // Check for trailing spaces in comment (not allowed per spec)
+    if comment_text.ends_with(' ') {
+        return Err(nom::Err::Error(nom::error::Error::new(
+            input,
+            nom::error::ErrorKind::Verify,
+        )));
+    }
+
     Ok((input, ()))
 }
 
 // Parse empty line or comment line
 fn parse_empty_or_comment(input: &str) -> IResult<&str, ()> {
     alt((
+        // Empty line with optional spaces - we'll check for trailing spaces elsewhere
         map((take_while(|c| c == ' '), line_ending), |_| ()),
         map((parse_comment, line_ending), |_| ()),
+        // Comment at end of file (no line ending)
+        map(parse_comment, |_| ()),
     ))
     .parse(input)
 }
@@ -74,10 +86,12 @@ fn parse_quoted_string(input: &str) -> IResult<&str, String> {
     let (input, _) = char('"').parse(input)?;
     let mut result = String::with_capacity(input.len() / 2);
     let mut remaining = input;
+    let mut found_closing_quote = false;
 
     while !remaining.is_empty() {
         if remaining.starts_with('"') {
             remaining = &remaining[1..];
+            found_closing_quote = true;
             break;
         } else if remaining.starts_with('\\') {
             if remaining.len() < 2 {
@@ -107,9 +121,54 @@ fn parse_quoted_string(input: &str) -> IResult<&str, String> {
                     result.push('\r');
                     remaining = &remaining[2..];
                 }
-                Some(c) => {
-                    result.push(c);
+                Some('b') => {
+                    result.push('\x08');
                     remaining = &remaining[2..];
+                }
+                Some('f') => {
+                    result.push('\x0C');
+                    remaining = &remaining[2..];
+                }
+                Some('/') => {
+                    result.push('/');
+                    remaining = &remaining[2..];
+                }
+                Some('u') => {
+                    // Unicode escape sequence: \uXXXX
+                    if remaining.len() < 6 {
+                        return Err(nom::Err::Error(nom::error::Error::new(
+                            input,
+                            nom::error::ErrorKind::Escaped,
+                        )));
+                    }
+                    let hex_chars = &remaining[2..6];
+                    match u32::from_str_radix(hex_chars, 16) {
+                        Ok(code_point) => match char::from_u32(code_point) {
+                            Some(ch) => {
+                                result.push(ch);
+                                remaining = &remaining[6..];
+                            }
+                            None => {
+                                return Err(nom::Err::Error(nom::error::Error::new(
+                                    input,
+                                    nom::error::ErrorKind::Escaped,
+                                )));
+                            }
+                        },
+                        Err(_) => {
+                            return Err(nom::Err::Error(nom::error::Error::new(
+                                input,
+                                nom::error::ErrorKind::Escaped,
+                            )));
+                        }
+                    }
+                }
+                Some(_) => {
+                    // Invalid escape sequence
+                    return Err(nom::Err::Error(nom::error::Error::new(
+                        input,
+                        nom::error::ErrorKind::Escaped,
+                    )));
                 }
                 None => {
                     return Err(nom::Err::Error(nom::error::Error::new(
@@ -119,31 +178,49 @@ fn parse_quoted_string(input: &str) -> IResult<&str, String> {
                 }
             }
         } else {
-            let c = remaining.chars().next().unwrap();
-            result.push(c);
-            remaining = &remaining[c.len_utf8()..];
+            let ch = remaining.chars().next().unwrap();
+            // Check for literal newlines (not allowed in quoted strings)
+            if ch == '\n' {
+                return Err(nom::Err::Error(nom::error::Error::new(
+                    input,
+                    nom::error::ErrorKind::Verify,
+                )));
+            }
+            result.push(ch);
+            remaining = &remaining[ch.len_utf8()..];
         }
+    }
+
+    if !found_closing_quote {
+        return Err(nom::Err::Error(nom::error::Error::new(
+            input,
+            nom::error::ErrorKind::Char,
+        )));
     }
 
     Ok((remaining, result))
 }
 
 // Parse multi-line string with ``` (preserve spaces)
-fn parse_multiline_string_preserve(input: &str) -> IResult<&str, String> {
+fn parse_multiline_string_preserve(input: &str, base_indent: usize) -> IResult<&str, String> {
     let (input, _) = tag("```").parse(input)?;
     let (input, _) = line_ending.parse(input)?;
 
     let mut result = String::with_capacity(input.len() / 4);
     let mut remaining = input;
     let mut first_line = true;
+    let base_indent_spaces = base_indent * 2; // Convert indent level to spaces
 
     while !remaining.is_empty() {
-        // Try to parse a line
-        let (line_end, line_content) =
+        // Count leading spaces on this line
+        let spaces_count = remaining.chars().take_while(|&c| c == ' ').count();
+
+        // Parse the full line
+        let (line_end, full_line) =
             not_line_ending::<&str, nom::error::Error<&str>>.parse(remaining)?;
 
-        // Check if this line is the closing ```
-        if line_content.trim() == "```" {
+        // Check if this is the closing ```
+        if spaces_count == base_indent_spaces && full_line.trim() == "```" {
             if let Ok((after_newline, _)) =
                 line_ending::<&str, nom::error::Error<&str>>.parse(line_end)
             {
@@ -153,18 +230,17 @@ fn parse_multiline_string_preserve(input: &str) -> IResult<&str, String> {
             }
         }
 
-        // Process the line content
-        // If it starts with at least 2 spaces, remove them (minimum indentation)
-        if line_content.len() >= 2 && line_content.starts_with("  ") {
-            if !first_line {
-                result.push('\n');
-            }
-            result.push_str(&line_content[2..]);
+        // For content lines, remove the base indent + 2 spaces
+        if !first_line {
+            result.push('\n');
+        }
+
+        // Calculate how many spaces to skip (base indent + 2 for content)
+        let skip_spaces = (base_indent_spaces + 2).min(spaces_count);
+        if full_line.len() >= skip_spaces {
+            result.push_str(&full_line[skip_spaces..]);
         } else {
-            if !first_line {
-                result.push('\n');
-            }
-            result.push_str(line_content);
+            result.push_str(full_line);
         }
 
         first_line = false;
@@ -186,33 +262,42 @@ fn parse_multiline_string_preserve(input: &str) -> IResult<&str, String> {
 }
 
 // Parse multi-line string with """ (strip spaces)
-fn parse_multiline_string_strip(input: &str) -> IResult<&str, String> {
+fn parse_multiline_string_strip(input: &str, base_indent: usize) -> IResult<&str, String> {
     let (input, _) = tag("\"\"\"").parse(input)?;
     let (input, _) = line_ending.parse(input)?;
 
-    let mut lines = Vec::with_capacity(16);
+    let mut result = String::with_capacity(input.len() / 4);
     let mut remaining = input;
+    let mut first_line = true;
+    let base_indent_spaces = base_indent * 2; // Convert indent level to spaces
 
     while !remaining.is_empty() {
-        // Try to parse a line
-        let (line_end, line_content) =
+        // Count leading spaces on this line
+        let spaces_count = remaining.chars().take_while(|&c| c == ' ').count();
+
+        // Parse the full line
+        let (line_end, full_line) =
             not_line_ending::<&str, nom::error::Error<&str>>.parse(remaining)?;
 
-        // Check if this line is the closing """
-        if line_content.trim() == "\"\"\"" {
+        // Check if this is the closing """
+        if spaces_count == base_indent_spaces && full_line.trim() == "\"\"\"" {
             if let Ok((after_newline, _)) =
                 line_ending::<&str, nom::error::Error<&str>>.parse(line_end)
             {
-                return Ok((after_newline, lines.join("\n")));
+                return Ok((after_newline, result));
             } else {
-                return Ok((line_end, lines.join("\n")));
+                return Ok((line_end, result));
             }
         }
 
-        // Process the line content by stripping leading/trailing spaces
-        let trimmed = line_content.trim();
+        // Process the line content - strip all leading and trailing whitespace
+        let trimmed = full_line.trim();
         if !trimmed.is_empty() {
-            lines.push(trimmed.to_string());
+            if !first_line {
+                result.push('\n');
+            }
+            result.push_str(trimmed);
+            first_line = false;
         }
 
         // Continue to next line
@@ -233,9 +318,20 @@ fn parse_multiline_string_strip(input: &str) -> IResult<&str, String> {
 
 // Parse any string
 fn parse_string(input: &str) -> IResult<&str, HumlValue> {
+    alt((map(parse_quoted_string, HumlValue::String),)).parse(input)
+}
+
+// Parse any string format with indentation context
+fn parse_string_with_indent(input: &str, indent: usize) -> IResult<&str, HumlValue> {
     alt((
-        map(parse_multiline_string_preserve, HumlValue::String),
-        map(parse_multiline_string_strip, HumlValue::String),
+        map(
+            move |i| parse_multiline_string_preserve(i, indent),
+            HumlValue::String,
+        ),
+        map(
+            move |i| parse_multiline_string_strip(i, indent),
+            HumlValue::String,
+        ),
         map(parse_quoted_string, HumlValue::String),
     ))
     .parse(input)
@@ -426,8 +522,57 @@ fn parse_null(input: &str) -> IResult<&str, HumlValue> {
 }
 
 // Parse scalar value
+// Check if input looks like an unquoted string (which should be rejected)
+fn detect_unquoted_string(input: &str) -> IResult<&str, ()> {
+    // Look for patterns that would be unquoted strings
+    let (_, word) =
+        take_while1(|c: char| !c.is_whitespace() && c != ':' && c != ',' && c != '#')(input)?;
+
+    // If it's not a valid boolean, null, number, or quoted string, it's likely an unquoted string
+    if word != "true"
+        && word != "false"
+        && word != "null"
+        && !word.starts_with('"')
+        && !word.starts_with('`')
+        && word.parse::<f64>().is_err()
+        && !word.starts_with("0x")
+        && !word.starts_with("0o")
+        && !word.starts_with("0b")
+        && word != "nan"
+        && word != "inf"
+        && word != "+inf"
+        && word != "-inf"
+    {
+        return Err(nom::Err::Error(nom::error::Error::new(
+            input,
+            nom::error::ErrorKind::Verify,
+        )));
+    }
+    Ok((input, ()))
+}
+
 pub fn parse_scalar(input: &str) -> IResult<&str, HumlValue> {
-    alt((parse_boolean, parse_null, parse_number, parse_string)).parse(input)
+    // Try each parser individually to see which one fails
+    if let Ok((remaining, value)) = parse_string(input) {
+        return Ok((remaining, value));
+    }
+    if let Ok((remaining, value)) = parse_boolean(input) {
+        return Ok((remaining, value));
+    }
+    if let Ok((remaining, value)) = parse_null(input) {
+        return Ok((remaining, value));
+    }
+    if let Ok((remaining, value)) = parse_number(input) {
+        return Ok((remaining, value));
+    }
+
+    // If none of the valid types matched, check if it looks like an unquoted string
+    let (_, _) = detect_unquoted_string(input)?;
+    // If we get here, it means we detected an unquoted string, which is an error
+    Err(nom::Err::Error(nom::error::Error::new(
+        input,
+        nom::error::ErrorKind::Verify,
+    )))
 }
 
 // Parse empty list
@@ -453,16 +598,60 @@ pub fn parse_inline_list(input: &str) -> IResult<&str, HumlValue> {
         )));
     }
 
-    // Parse the rest of the items
-    let (input, remaining_items) =
-        many0(preceded((char(','), space1), parse_scalar)).parse(input)?;
+    // Check for space before comma (not allowed per spec)
+    if input.starts_with(" ,") {
+        return Err(nom::Err::Error(nom::error::Error::new(
+            input,
+            nom::error::ErrorKind::Verify,
+        )));
+    }
 
-    // Combine all items with pre-allocated capacity
-    let mut items = Vec::with_capacity(1 + remaining_items.len());
+    let (input, _) = char(',').parse(input)?;
+
+    // Must have exactly one space after comma
+    if !input.starts_with(' ') || input.starts_with("  ") {
+        return Err(nom::Err::Error(nom::error::Error::new(
+            input,
+            nom::error::ErrorKind::Verify,
+        )));
+    }
+
+    let (input, _) = char(' ').parse(input)?;
+    let (input, second_item) = parse_scalar(input)?;
+
+    let mut items = Vec::with_capacity(8);
     items.push(first_item);
-    items.extend(remaining_items);
+    items.push(second_item);
 
-    Ok((input, HumlValue::List(items)))
+    let mut remaining = input;
+
+    // Parse additional items
+    while remaining.starts_with(',') {
+        // Check for space before comma (not allowed)
+        if remaining.starts_with(" ,") {
+            return Err(nom::Err::Error(nom::error::Error::new(
+                remaining,
+                nom::error::ErrorKind::Verify,
+            )));
+        }
+
+        let (new_input, _) = char(',').parse(remaining)?;
+
+        // Must have exactly one space after comma
+        if !new_input.starts_with(' ') || new_input.starts_with("  ") {
+            return Err(nom::Err::Error(nom::error::Error::new(
+                new_input,
+                nom::error::ErrorKind::Verify,
+            )));
+        }
+
+        let (new_input, _) = char(' ').parse(new_input)?;
+        let (new_input, item) = parse_scalar(new_input)?;
+        items.push(item);
+        remaining = new_input;
+    }
+
+    Ok((remaining, HumlValue::List(items)))
 }
 
 // Parse unquoted key
@@ -487,25 +676,80 @@ fn parse_key(input: &str) -> IResult<&str, String> {
 // Parse key-value pair for dict
 fn parse_dict_pair(input: &str) -> IResult<&str, (String, HumlValue)> {
     let (input, key) = parse_key(input)?;
+
+    // Check for space before colon (not allowed)
+    if input.starts_with(' ') {
+        return Err(nom::Err::Error(nom::error::Error::new(
+            input,
+            nom::error::ErrorKind::Verify,
+        )));
+    }
+
     let (input, _) = char(':').parse(input)?;
-    let (input, _) = space1.parse(input)?;
+
+    // Must have exactly one space after colon
+    if !input.starts_with(' ') || input.starts_with("  ") {
+        return Err(nom::Err::Error(nom::error::Error::new(
+            input,
+            nom::error::ErrorKind::Verify,
+        )));
+    }
+
+    let (input, _) = char(' ').parse(input)?;
     let (input, value) = parse_scalar(input)?;
     Ok((input, (key, value)))
 }
 
 // Parse inline dict
 pub fn parse_inline_dict(input: &str) -> IResult<&str, HumlValue> {
-    map(
-        separated_list1((char(','), space1), parse_dict_pair),
-        |pairs| {
-            let mut dict = HashMap::with_capacity(pairs.len());
-            for (key, value) in pairs {
-                dict.insert(key, value);
-            }
-            HumlValue::Dict(dict)
-        },
-    )
-    .parse(input)
+    // Parse first key-value pair
+    let (input, first_pair) = parse_dict_pair(input)?;
+
+    let mut dict = HashMap::with_capacity(8);
+    dict.insert(first_pair.0, first_pair.1);
+    let mut remaining = input;
+
+    // If there's no comma, this is a single key-value dict (still valid)
+    if !remaining.starts_with(',') {
+        return Ok((remaining, HumlValue::Dict(dict)));
+    }
+
+    // Parse additional key-value pairs if there are commas
+    while remaining.starts_with(',') {
+        // Check for space before comma (not allowed)
+        if remaining.starts_with(" ,") {
+            return Err(nom::Err::Error(nom::error::Error::new(
+                remaining,
+                nom::error::ErrorKind::Verify,
+            )));
+        }
+
+        let (new_input, _) = char(',').parse(remaining)?;
+
+        // Must have exactly one space after comma
+        if !new_input.starts_with(' ') || new_input.starts_with("  ") {
+            return Err(nom::Err::Error(nom::error::Error::new(
+                new_input,
+                nom::error::ErrorKind::Verify,
+            )));
+        }
+
+        let (new_input, _) = char(' ').parse(new_input)?;
+        let (new_input, (key, value)) = parse_dict_pair(new_input)?;
+
+        // Check for duplicate keys
+        if dict.contains_key(&key) {
+            return Err(nom::Err::Error(nom::error::Error::new(
+                new_input,
+                nom::error::ErrorKind::Verify,
+            )));
+        }
+
+        dict.insert(key, value);
+        remaining = new_input;
+    }
+
+    Ok((remaining, HumlValue::Dict(dict)))
 }
 
 // Parse multi-line list item
@@ -661,7 +905,7 @@ fn parse_dict_entry(input: &str, expected_indent: usize) -> IResult<&str, (Strin
 
         // Parse the value (can be scalar, inline list, inline dict, or multiline string)
         let (input, value) = alt((
-            parse_string, // This handles both regular and multiline strings
+            move |i| parse_string_with_indent(i, expected_indent), // This handles both regular and multiline strings
             parse_empty_list,
             parse_empty_dict,
             parse_scalar,
@@ -669,6 +913,10 @@ fn parse_dict_entry(input: &str, expected_indent: usize) -> IResult<&str, (Strin
             parse_inline_dict,
         ))
         .parse(input)?;
+
+        // Handle optional comment after the value
+        let (input, _) = opt(preceded(space1, parse_comment)).parse(input)?;
+
         Ok((input, (key, value)))
     }
 }
@@ -700,6 +948,13 @@ fn parse_multiline_dict(input: &str, expected_indent: usize) -> IResult<&str, Hu
         // Try to parse a dict entry
         match parse_dict_entry(new_input, expected_indent) {
             Ok((new_input, (key, value))) => {
+                // Check for duplicate keys (not allowed per spec)
+                if dict.contains_key(&key) {
+                    return Err(nom::Err::Error(nom::error::Error::new(
+                        new_input,
+                        nom::error::ErrorKind::Verify,
+                    )));
+                }
                 dict.insert(key, value);
                 let (new_input, _) = opt(line_ending).parse(new_input)?;
                 remaining = new_input;
@@ -729,17 +984,25 @@ fn parse_multiline_value(input: &str, expected_indent: usize) -> IResult<&str, H
         }
         let (new_input, indent) = parse_indent(new_input)?;
 
+        // Look for content at expected_indent or expected_indent + 1
+        // This handles both nested lists (at expected_indent) and dicts (at expected_indent + 1)
         if indent == expected_indent {
             if new_input.starts_with('-') {
                 return parse_multiline_list(input, expected_indent);
             } else {
                 return parse_multiline_dict(input, expected_indent);
             }
+        } else if indent == expected_indent + 1 {
+            if new_input.starts_with('-') {
+                return parse_multiline_list(input, expected_indent + 1);
+            } else {
+                return parse_multiline_dict(input, expected_indent + 1);
+            }
         } else if indent < expected_indent {
             // We've reached content at a lower indentation level
             break;
         } else {
-            // Continue looking for content at the expected level
+            // Continue looking for content at a deeper level
             peek_input = new_input;
         }
     }
@@ -752,7 +1015,7 @@ fn parse_multiline_value(input: &str, expected_indent: usize) -> IResult<&str, H
 fn parse_version(input: &str) -> IResult<&str, Option<String>> {
     let (input, _) = skip_empty_and_comments(input)?;
 
-    opt(map(
+    if let Ok((remaining, version)) = opt(map(
         (
             tag("%HUML"),
             space1::<&str, nom::error::Error<&str>>,
@@ -765,11 +1028,42 @@ fn parse_version(input: &str) -> IResult<&str, Option<String>> {
         |(_, _, version, _)| version.to_string(),
     ))
     .parse(input)
+    {
+        // If version directive is present, there must be content after it
+        if version.is_some() {
+            let (after_version, _) = skip_empty_and_comments(remaining)?;
+            if after_version.trim().is_empty() {
+                return Err(nom::Err::Error(nom::error::Error::new(
+                    remaining,
+                    nom::error::ErrorKind::Verify,
+                )));
+            }
+        }
+        Ok((remaining, version))
+    } else {
+        Ok((input, None))
+    }
 }
 
 // Parse document root
 pub fn parse_document_root(input: &str) -> IResult<&str, HumlValue> {
     let (input, _) = skip_empty_and_comments(input)?;
+
+    // Check for leading spaces at document root (not allowed per spec)
+    if input.starts_with(' ') {
+        return Err(nom::Err::Error(nom::error::Error::new(
+            input,
+            nom::error::ErrorKind::Verify,
+        )));
+    }
+
+    // Check for invalid root constructs like "::" or ":: []"
+    if input.starts_with("::") {
+        return Err(nom::Err::Error(nom::error::Error::new(
+            input,
+            nom::error::ErrorKind::Verify,
+        )));
+    }
 
     // Check if the document starts with a list item
     if input.starts_with('-') {
@@ -779,6 +1073,13 @@ pub fn parse_document_root(input: &str) -> IResult<&str, HumlValue> {
     // Check if it's a multiline string at root
     if input.starts_with("```") || input.starts_with("\"\"\"") {
         return parse_string(input);
+    }
+
+    // Check for empty containers first (before newline check)
+    if input.starts_with("[]") || input.starts_with("{}") {
+        if let Ok((remaining, value)) = alt((parse_empty_list, parse_empty_dict)).parse(input) {
+            return Ok((remaining, value));
+        }
     }
 
     // Check if it's a simple scalar value (single line)
@@ -799,18 +1100,92 @@ pub fn parse_document_root(input: &str) -> IResult<&str, HumlValue> {
         if let Ok((remaining, value)) = parse_scalar(input) {
             return Ok((remaining, value));
         }
+
+        // If it contains a colon but not comma, it's likely a single-line dict entry
+        if input.contains(':') && !input.contains(',') {
+            return parse_multiline_dict(input, 0);
+        }
     }
 
     // Otherwise, it's a multi-line dict at root level
     parse_multiline_dict(input, 0)
 }
 
+// Check for trailing spaces at end of line
+fn check_no_trailing_spaces(input: &str) -> IResult<&str, ()> {
+    // Check for trailing spaces at end of file
+    if input.ends_with(' ') {
+        return Err(nom::Err::Error(nom::error::Error::new(
+            input,
+            nom::error::ErrorKind::Verify,
+        )));
+    }
+
+    // Check for trailing spaces at end of each line
+    for line in input.lines() {
+        if line.ends_with(' ') {
+            return Err(nom::Err::Error(nom::error::Error::new(
+                input,
+                nom::error::ErrorKind::Verify,
+            )));
+        }
+    }
+
+    Ok((input, ()))
+}
+
+// Validate that input is not empty or whitespace/comments only
+fn validate_not_empty_document(input: &str) -> IResult<&str, ()> {
+    let trimmed = input.trim();
+    if trimmed.is_empty() {
+        return Err(nom::Err::Error(nom::error::Error::new(
+            input,
+            nom::error::ErrorKind::Verify,
+        )));
+    }
+
+    // Check if only comments (should be error)
+    let lines: Vec<&str> = trimmed.lines().collect();
+    let has_content = lines.iter().any(|line| {
+        let line = line.trim();
+        !line.is_empty() && !line.starts_with('#')
+    });
+
+    if !has_content {
+        return Err(nom::Err::Error(nom::error::Error::new(
+            input,
+            nom::error::ErrorKind::Verify,
+        )));
+    }
+
+    Ok((input, ()))
+}
+
 // Main parser function
 pub fn parse_huml(input: &str) -> IResult<&str, HumlDocument> {
+    // First validate the entire input for trailing spaces
+    let (_, _) = check_no_trailing_spaces(input)?;
+
+    // Validate not empty or comments-only
+    let (_, _) = validate_not_empty_document(input)?;
+
     let (input, version) = parse_version(input)?;
     let (input, root) = parse_document_root(input)?;
-    let (input, _) = skip_empty_and_comments(input)?;
-    Ok((input, HumlDocument { version, root }))
+    let (remaining, _) = skip_empty_and_comments(input)?;
+
+    // Check if there's any remaining content after parsing (should be error for root scalars)
+    if !remaining.trim().is_empty() {
+        // Allow trailing newlines for containers at root
+        let trimmed = remaining.trim();
+        if !trimmed.is_empty() {
+            return Err(nom::Err::Error(nom::error::Error::new(
+                remaining,
+                nom::error::ErrorKind::Verify,
+            )));
+        }
+    }
+
+    Ok((remaining, HumlDocument { version, root }))
 }
 
 pub mod serde;
