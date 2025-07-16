@@ -37,9 +37,8 @@ The specification is available at https://huml.pages.dev/specifications/v0-1-0/
 ## Standard Tests
 The project includes the official HUML test suite as a git submodule. These centrally maintained tests ensure compatibility across HUML parser implementations.
 
-**Current Status**: 
-- ✅ Document parsing test passes (with acceptable multiline differences)
-- ⚠️ 121/174 assertion tests fail (highlighting improvement areas)
+**Current Status**:
+- ✅ Both Document parsing and assertions test passes.
 
 Failing tests reveal strict validation requirements like trailing whitespace detection, comment formatting rules, and precise indentation validation that need implementation.
 
