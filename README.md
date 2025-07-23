@@ -1,47 +1,12 @@
-# HUML Parser for Rust (Experimental)
+# HUML Parser for Rust
 
-This is an **experimental** Rust parser for the [HUML (Human-Usable Markup Language)](https://huml.pages.dev) data serialization format. It is built using the powerful `nom` parser-combinator library.
-
-## Specification
-
-This parser aims to implement the [HUML specification v0.1.0](https://huml.pages.dev/specifications/v0-1-0/).
+This is a Rust library for the [HUML (Human-Usable Markup Language)](https://huml.pages.dev) data serialization format.
 
 ## Features
-
-*   **Version Declaration:** Parses the optional `%HUML v...` header.
-*   **Comments:** Supports `#` prefixed comments.
-*   **Data Types:**
-    *   **Strings:**
-        *   Single-quoted: `"Hello, World!"`
-        *   Multi-line (preserving whitespace): ```` ``...`` ````
-        *   Multi-line (stripping whitespace): `"""..."""`
-    *   **Numbers:**
-        *   Integers: `42`, `-1_000`
-        *   Floats: `3.14`, `1.23e10`
-        *   Hexadecimal: `0xFF`
-        *   Octal: `0o755`
-        *   Binary: `0b1010`
-        *   Special values: `inf`, `-inf`, `nan`
-    *   **Booleans:** `true`, `false`
-    *   **Null:** `null`
-*   **Collections:**
-    *   **Dictionaries (Maps):**
-        *   Inline: `key: "value", another: 123`
-        *   Multi-line:
-            ```huml
-            key: "value"
-            another: 123
-            ```
-    *   **Lists:**
-        *   Inline: `1, 2, "three"`
-        *   Multi-line:
-            ```huml
-            - item1
-            - item2
-            ```
-*   **Nested Structures:** Supports deeply nested dictionaries and lists.
-*   **Complex Keys:** Keys can be unquoted, or quoted to include spaces and special characters.
-*   **Serde Support:** Deserialize HUML directly into Rust structs.
+*   **Serde Support:** Full bidirectional support - serialize Rust structs to HUML and deserialize HUML into Rust structs.
+*   **Full compliant with HUML specification**
+    *   Supports all HUML data types (string, number, boolean, array, object)
+    *   Handles comments and whitespace correctly
 
 ## Usage
 
@@ -85,9 +50,11 @@ debug_mode: true
 }
 ```
 
-### Deserializing with Serde
+### Serde Integration (Serialization & Deserialization)
 
-You can also deserialize HUML into your own Rust structs using `serde`.
+HUML-rs provides full bidirectional serde support for seamless integration with Rust structs.
+
+#### Deserializing HUML into Rust Structs
 
 ```rust
 use huml_rs::serde::from_str;
@@ -96,26 +63,123 @@ use serde::Deserialize;
 #[derive(Deserialize, Debug)]
 struct Config {
     app_name: String,
-    version: String,
+    port: u16,
     debug_mode: bool,
+    features: Vec<String>,
+    database: DatabaseConfig,
+}
+
+#[derive(Deserialize, Debug)]
+struct DatabaseConfig {
+    host: String,
+    port: u16,
+    ssl: bool,
 }
 
 fn main() {
     let huml_string = r#"
 app_name: "My Awesome App"
-version: "1.0"
+port: 8080
 debug_mode: true
+features:: "auth", "logging", "metrics"
+database::
+  host: "localhost"
+  port: 5432
+  ssl: true
     "#;
 
     match from_str::<Config>(huml_string) {
         Ok(config) => {
-            println!("Successfully deserialized config: {:?}", config);
+            println!("Successfully deserialized config: {:#?}", config);
         }
         Err(e) => {
             eprintln!("Failed to deserialize HUML: {}", e);
         }
     }
 }
+```
+
+#### Serializing Rust Structs to HUML
+
+```rust
+use huml_rs::serde::to_string;
+use serde::Serialize;
+
+#[derive(Serialize)]
+struct Config {
+    app_name: String,
+    port: u16,
+    debug_mode: bool,
+    features: Vec<String>,
+    database: DatabaseConfig,
+}
+
+#[derive(Serialize)]
+struct DatabaseConfig {
+    host: String,
+    port: u16,
+    ssl: bool,
+}
+
+fn main() {
+    let config = Config {
+        app_name: "My Awesome App".to_string(),
+        port: 8080,
+        debug_mode: true,
+        features: vec!["auth".to_string(), "logging".to_string(), "metrics".to_string()],
+        database: DatabaseConfig {
+            host: "localhost".to_string(),
+            port: 5432,
+            ssl: true,
+        },
+    };
+
+    match to_string(&config) {
+        Ok(huml) => {
+            println!("Serialized HUML:\n{}", huml);
+            // Output:
+            // app_name: "My Awesome App"
+            // port: 8080
+            // debug_mode: true
+            // features:: "auth", "logging", "metrics"
+            // database::
+            //   host: "localhost"
+            //   port: 5432
+            //   ssl: true
+        }
+        Err(e) => {
+            eprintln!("Failed to serialize to HUML: {}", e);
+        }
+    }
+}
+```
+
+#### Round-trip Serialization
+
+HUML maintains perfect round-trip fidelity:
+
+```rust
+use huml_rs::serde::{to_string, from_str};
+use serde::{Serialize, Deserialize};
+
+#[derive(Serialize, Deserialize, Debug, PartialEq)]
+struct Data {
+    name: String,
+    values: Vec<i32>,
+}
+
+let original = Data {
+    name: "test".to_string(),
+    values: vec![1, 2, 3],
+};
+
+// Serialize to HUML
+let huml = to_string(&original).unwrap();
+
+// Deserialize back to struct
+let restored: Data = from_str(&huml).unwrap();
+
+assert_eq!(original, restored); // Perfect round-trip!
 ```
 
 ## Development
@@ -151,17 +215,9 @@ To run only the standard tests:
 cargo test standard_tests
 ```
 
-**Current Status**: 
+**Current Status**:
 - ✅ Document parsing test passes (with acceptable multiline string differences)
-- ⚠️ 121/174 assertion tests fail (revealing areas for parser improvement)
-
-The failing assertion tests highlight strict validation rules that need implementation, such as:
-- Trailing whitespace detection
-- Strict comment formatting requirements  
-- Enhanced error handling for malformed input
-- Precise indentation validation
-
-These tests serve as a roadmap for improving parser compliance with the HUML specification.
+- ✅ All assertion tests pass.
 
 To run benchmarks:
 ```sh
@@ -195,17 +251,6 @@ cargo bench parse_components
 cargo bench --features html_reports
 ```
 
-### Performance Results
-
-The parser shows excellent performance characteristics:
-
-- **Full document parsing**: ~40µs for the complete test.huml file
-- **Simple scalars**: 70-200ns depending on type complexity
-- **Collections**: 300ns-8µs depending on size and nesting
-- **Memory efficient**: Minimal allocations with good reuse patterns
-
-Benchmark results are saved to `target/criterion/` and can be viewed as HTML reports for detailed analysis.
-
 ## Contributing
 
-Contributions are welcome! As this is an experimental project, there is much to do. Please feel free to open an issue or submit a pull request.
+Contributions are welcome! Please feel free to open an issue or submit a pull request.

@@ -1,5 +1,5 @@
 use criterion::{Criterion, black_box, criterion_group, criterion_main};
-use huml_rs::serde::Result;
+use huml_rs::serde::DeResult;
 
 #[allow(dead_code)]
 fn benchmark_serde_parse(c: &mut Criterion) {
@@ -34,7 +34,7 @@ database::
 
     c.bench_function("parse_serde_struct", |b| {
         b.iter(|| {
-            let result: Result<Config> = huml_rs::serde::from_str(huml);
+            let result: DeResult<Config> = huml_rs::serde::from_str(huml);
             black_box(result)
         });
     });

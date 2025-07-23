@@ -8,6 +8,7 @@ use nom::{
     sequence::preceded,
 };
 use std::collections::HashMap;
+pub mod serde;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum HumlValue {
@@ -351,7 +352,7 @@ fn parse_binary_number(input: &str) -> IResult<&str, i64> {
 // Parse octal number
 fn parse_octal_number(input: &str) -> IResult<&str, i64> {
     let (input, _) = tag("0o").parse(input)?;
-    let (input, octal_str) = take_while1(|c| c >= '0' && c <= '7' || c == '_').parse(input)?;
+    let (input, octal_str) = take_while1(|c| ('0'..='7').contains(&c) || c == '_').parse(input)?;
     let clean_octal = octal_str.replace('_', "");
     let number = i64::from_str_radix(&clean_octal, 8).map_err(|_| {
         nom::Err::Error(nom::error::Error::new(input, nom::error::ErrorKind::Digit))
@@ -1188,7 +1189,6 @@ pub fn parse_huml(input: &str) -> IResult<&str, HumlDocument> {
     Ok((remaining, HumlDocument { version, root }))
 }
 
-pub mod serde;
 #[cfg(test)]
 pub mod standard_tests;
 

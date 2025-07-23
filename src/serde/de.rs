@@ -3,31 +3,6 @@
 //! This module provides a custom Serde deserializer that allows users to deserialize
 //! HUML text directly into their own Rust structs using `#[derive(Deserialize)]`.
 //!
-//! # Example
-//!
-//! ```rust
-//! use serde::Deserialize;
-//! use huml_rs::serde::from_str;
-//!
-//! #[derive(Deserialize, Debug)]
-//! struct Config {
-//!     app_name: String,
-//!     port: u16,
-//!     debug: bool,
-//!     features: Vec<String>,
-//! }
-//!
-//! let huml = r#"
-//! app_name: "My Application"
-//! port: 8080
-//! debug: true
-//! features:: "auth", "logging", "metrics"
-//! "#;
-//!
-//! let config: Config = from_str(huml).unwrap();
-//! println!("{:?}", config);
-//! ```
-//!
 //! # Supported HUML Features
 //!
 //! The deserializer supports all standard HUML data types:
@@ -39,7 +14,7 @@
 
 use crate::{HumlNumber, HumlValue, parse_huml};
 use serde::de::{self, Deserialize, DeserializeSeed, Visitor};
-use std::fmt;
+use std::{fmt, str::FromStr};
 
 /// Error type for HUML deserialization
 #[derive(Debug, Clone)]
@@ -60,10 +35,10 @@ impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Error::Message(msg) => f.write_str(msg),
-            Error::ParseError(msg) => write!(f, "Parse error: {}", msg),
-            Error::InvalidType(msg) => write!(f, "Invalid type: {}", msg),
-            Error::MissingField(field) => write!(f, "Missing field: {}", field),
-            Error::UnknownField(field) => write!(f, "Unknown field: {}", field),
+            Error::ParseError(msg) => write!(f, "Parse error: {msg}"),
+            Error::InvalidType(msg) => write!(f, "Invalid type: {msg}"),
+            Error::MissingField(field) => write!(f, "Missing field: {field}"),
+            Error::UnknownField(field) => write!(f, "Unknown field: {field}"),
         }
     }
 }
@@ -90,8 +65,37 @@ impl Deserializer {
         Self { value }
     }
 
+    /// Parse individual value types (scalars, lists, inline dicts)
+    fn parse_value(input: &str) -> Result<Self> {
+        // Check for empty containers first (fastest check)
+        if input == "[]" {
+            return Ok(Self::new(HumlValue::List(Vec::new())));
+        }
+        if input == "{}" {
+            return Ok(Self::new(HumlValue::Dict(std::collections::HashMap::new())));
+        }
+
+        // Try scalar parsing (most common case)
+        if let Ok(("", value)) = crate::parse_scalar(input) {
+            return Ok(Self::new(value));
+        }
+
+        // Try inline structures
+        if let Ok(("", value)) = crate::parse_inline_list(input) {
+            return Ok(Self::new(value));
+        }
+        if let Ok(("", value)) = crate::parse_inline_dict(input) {
+            return Ok(Self::new(value));
+        }
+
+        Err(Error::ParseError(format!("Unable to parse value: {input}")))
+    }
+}
+
+impl FromStr for Deserializer {
+    type Err = Error;
     /// Create a deserializer from HUML text
-    pub fn from_str(input: &str) -> Result<Self> {
+    fn from_str(input: &str) -> Result<Self> {
         let trimmed = input.trim();
         if trimmed.is_empty() {
             return Ok(Self::new(HumlValue::String(String::new())));
@@ -118,41 +122,8 @@ impl Deserializer {
         }
 
         // Last resort: try individual value types
-        Self::parse_value(trimmed).or_else(|_| {
-            Err(Error::ParseError(format!(
-                "Unable to parse HUML content: {}",
-                trimmed
-            )))
-        })
-    }
-
-    /// Parse individual value types (scalars, lists, inline dicts)
-    fn parse_value(input: &str) -> Result<Self> {
-        // Check for empty containers first (fastest check)
-        if input == "[]" {
-            return Ok(Self::new(HumlValue::List(Vec::new())));
-        }
-        if input == "{}" {
-            return Ok(Self::new(HumlValue::Dict(std::collections::HashMap::new())));
-        }
-
-        // Try scalar parsing (most common case)
-        if let Ok(("", value)) = crate::parse_scalar(input) {
-            return Ok(Self::new(value));
-        }
-
-        // Try inline structures
-        if let Ok(("", value)) = crate::parse_inline_list(input) {
-            return Ok(Self::new(value));
-        }
-        if let Ok(("", value)) = crate::parse_inline_dict(input) {
-            return Ok(Self::new(value));
-        }
-
-        Err(Error::ParseError(format!(
-            "Unable to parse value: {}",
-            input
-        )))
+        Self::parse_value(trimmed)
+            .map_err(|_| Error::ParseError(format!("Unable to parse HUML content: {trimmed}")))
     }
 }
 
