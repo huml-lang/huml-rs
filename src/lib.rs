@@ -2,10 +2,10 @@ use nom::{
     IResult, Parser,
     branch::alt,
     bytes::complete::{tag, take_while, take_while1},
-    character::complete::{char, line_ending, not_line_ending, space1},
+    character::complete::{alpha1, char, line_ending, not_line_ending, space1},
     combinator::{map, opt, value},
     multi::many0,
-    sequence::preceded,
+    sequence::{pair, preceded},
 };
 use std::collections::HashMap;
 pub mod serde;
@@ -658,8 +658,11 @@ pub fn parse_inline_list(input: &str) -> IResult<&str, HumlValue> {
 // Parse unquoted key
 fn parse_unquoted_key(input: &str) -> IResult<&str, String> {
     map(
-        take_while1(|c: char| c.is_alphanumeric() || c == '_' || c == '-'),
-        |s: &str| s.to_string(),
+        pair(
+            alpha1,
+            take_while(|c: char| c.is_alphanumeric() || c == '_' || c == '-'),
+        ),
+        |(first, rest): (&str, &str)| format!("{}{}", first, rest),
     )
     .parse(input)
 }
