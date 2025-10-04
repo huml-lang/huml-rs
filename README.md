@@ -18,6 +18,8 @@ huml-rs = "0.1.0" # Replace with the desired version
 serde = { version = "1.0", features = ["derive"] }
 ```
 
+You can find the crate on [crates.io](https://crates.io/crates/huml-rs).
+
 ### Low-level Parsing
 
 Then, you can parse a HUML string like this:
