@@ -1,6 +1,6 @@
 # HUML Parser for Rust
 
-This is a Rust library for the [HUML (Human-Usable Markup Language)](https://huml.pages.dev) data serialization format.
+This is a Rust library for the [HUML (Human-Usable Markup Language)](https://huml.io/) data serialization format.
 
 ## Features
 *   **Serde Support:** Full bidirectional support - serialize Rust structs to HUML and deserialize HUML into Rust structs.
