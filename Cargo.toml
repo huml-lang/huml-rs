@@ -2,6 +2,12 @@
 name = "huml-rs"
 version = "0.1.0"
 edition = "2024"
+license = "MIT"
+repository = "https://github.com/huml-lang/huml-rs"
+homepage = "https://huml.io"
+description = "A Rust parser for HUML (Human-usable Markup Language)"
+keywords = ["huml", "huml-rs", "parsing", "markup"]
+categories = ["parser-implementations"]
 
 [dependencies]
 nom = "8.0.0"
