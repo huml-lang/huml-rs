@@ -10,7 +10,6 @@ keywords = ["huml", "huml-rs", "parsing", "markup"]
 categories = ["parser-implementations"]
 
 [dependencies]
-nom = "8.0.0"
 serde = { version = "1.0", features = ["derive"] }
 
 [dev-dependencies]
