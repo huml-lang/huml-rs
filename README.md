@@ -186,7 +186,7 @@ assert_eq!(original, restored); // Perfect round-trip!
 
 ## Development
 
-This project is built with Rust and `nom`.
+This project is built with Rust using a hand-written recursive descent parser inspired by Go's parsing style.
 
 To build the project:
 ```sh
@@ -218,8 +218,8 @@ cargo test standard_tests
 ```
 
 **Current Status**:
-- ✅ Document parsing test passes (with acceptable multiline string differences)
-- ✅ All assertion tests pass.
+- ✅ All document parsing tests pass
+- ✅ All assertion tests pass (174+ test cases)
 
 To run benchmarks:
 ```sh
@@ -243,14 +243,13 @@ This project includes comprehensive benchmarks using [Criterion.rs](https://gith
 ### Running Benchmarks
 
 ```sh
-# Run all benchmarks
+# Run all benchmarks (HTML reports automatically generated)
 cargo bench
 
 # Run specific benchmark group
 cargo bench parse_components
 
-# Generate HTML reports (requires criterion html_reports feature)
-cargo bench --features html_reports
+# View HTML reports in target/criterion/reports/index.html
 ```
 
 ## Contributing
