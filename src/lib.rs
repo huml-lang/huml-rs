@@ -68,4 +68,119 @@ key2::
             panic!("expected dict");
         }
     }
+
+    #[test]
+    fn multiline_string_with_backticks_preserves_dedented() {
+        let input = r#"text: ```
+  line one
+  line two
+  line three
+```"#;
+        let (_, doc) = parse_huml(input).expect("should parse");
+        if let HumlValue::Dict(map) = doc.root {
+            if let Some(HumlValue::String(s)) = map.get("text") {
+                // With ```, preserves spaces: strips key_indent+2 (0+2=2 spaces)
+                // Lines have 2 spaces, so after stripping 2, we get empty prefix
+                assert_eq!(s, "line one\nline two\nline three");
+            } else {
+                panic!("expected string value");
+            }
+        } else {
+            panic!("expected dict");
+        }
+    }
+
+    #[test]
+    fn multiline_string_with_quotes_trims() {
+        let input = r#"text: """
+    line one
+    line two
+    line three
+""""#;
+        let (_, doc) = parse_huml(input).expect("should parse");
+        if let HumlValue::Dict(map) = doc.root {
+            if let Some(HumlValue::String(s)) = map.get("text") {
+                // With """, trim() is called, removing all leading/trailing spaces
+                assert_eq!(s, "line one\nline two\nline three");
+            } else {
+                panic!("expected string value");
+            }
+        } else {
+            panic!("expected dict");
+        }
+    }
+
+    #[test]
+    fn multiline_string_backticks_preserves_extra_spaces() {
+        let input = r#"text: ```
+    line with extra spaces
+  line with minimal spaces
+      line with many spaces
+```"#;
+        let (_, doc) = parse_huml(input).expect("should parse");
+        if let HumlValue::Dict(map) = doc.root {
+            if let Some(HumlValue::String(s)) = map.get("text") {
+                // With ```, strips key_indent+2 (0+2=2 spaces), keeps rest
+                // Line 1: 4 spaces - 2 = "  line with extra spaces"
+                // Line 2: 2 spaces - 2 = "line with minimal spaces"
+                // Line 3: 6 spaces - 2 = "    line with many spaces"
+                assert_eq!(s, "  line with extra spaces\nline with minimal spaces\n    line with many spaces");
+            } else {
+                panic!("expected string value");
+            }
+        } else {
+            panic!("expected dict");
+        }
+    }
+
+    #[test]
+    fn multiline_string_backticks_with_empty_lines() {
+        let input = r#"text: ```
+  first line
+
+  third line
+```"#;
+        let (_, doc) = parse_huml(input).expect("should parse");
+        if let HumlValue::Dict(map) = doc.root {
+            if let Some(HumlValue::String(s)) = map.get("text") {
+                assert_eq!(s, "first line\n\nthird line");
+            } else {
+                panic!("expected string value");
+            }
+        } else {
+            panic!("expected dict");
+        }
+    }
+
+    #[test]
+    fn multiline_string_minimal_indent() {
+        let input = r#"x: ```
+first
+second
+```"#;
+        let (_, doc) = parse_huml(input).expect("should parse");
+        if let HumlValue::Dict(map) = doc.root {
+            if let Some(HumlValue::String(s)) = map.get("x") {
+                assert_eq!(s, "first\nsecond");
+            } else {
+                panic!("expected string value");
+            }
+        } else {
+            panic!("expected dict");
+        }
+    }
+
+    #[test]
+    fn duplicate_key_error_before_malformed_value() {
+        // This test ensures duplicate key errors are reported before parsing malformed values
+        let input = r#"
+key: "first"
+key: [this is malformed
+"#;
+        let result = parse_huml(input);
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        // Should get duplicate key error, not a parse error from the malformed value
+        assert!(err_msg.contains("duplicate key"));
+    }
 }

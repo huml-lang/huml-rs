@@ -1,4 +1,5 @@
 use crate::{HumlDocument, HumlNumber, HumlValue};
+use std::collections::hash_map::Entry;
 use std::collections::HashMap;
 use std::fmt;
 
@@ -326,12 +327,10 @@ impl<'a> Parser<'a> {
                 Ok(HumlValue::Number(HumlNumber::Infinity(true)))
             }
             b'+' => {
-                self.advance(1);
-                if self.starts_with("inf") {
-                    self.advance(3);
+                if self.pos + 1 < self.len && self.input[self.pos + 1..].starts_with("inf") {
+                    self.advance(4);
                     Ok(HumlValue::Number(HumlNumber::Infinity(true)))
-                } else if self.current_byte().map_or(false, |c| c.is_ascii_digit()) {
-                    self.pos = self.pos.saturating_sub(1);
+                } else if self.pos + 1 < self.len && self.bytes[self.pos + 1].is_ascii_digit() {
                     let number = self.parse_number()?;
                     Ok(HumlValue::Number(number))
                 } else {
@@ -339,12 +338,10 @@ impl<'a> Parser<'a> {
                 }
             }
             b'-' => {
-                self.advance(1);
-                if self.starts_with("inf") {
-                    self.advance(3);
+                if self.pos + 1 < self.len && self.input[self.pos + 1..].starts_with("inf") {
+                    self.advance(4);
                     Ok(HumlValue::Number(HumlNumber::Infinity(false)))
-                } else if self.current_byte().map_or(false, |c| c.is_ascii_digit()) {
-                    self.pos = self.pos.saturating_sub(1);
+                } else if self.pos + 1 < self.len && self.bytes[self.pos + 1].is_ascii_digit() {
                     let number = self.parse_number()?;
                     Ok(HumlValue::Number(number))
                 } else {
@@ -384,24 +381,28 @@ impl<'a> Parser<'a> {
             }
 
             let key = self.parse_key()?;
-            if dict.contains_key(&key) {
-                return self.err(format!("duplicate key '{}' in dict", key));
-            }
 
-            let indicator = self.parse_indicator()?;
-            let value = if indicator == ":" {
-                self.assert_space("after ':'")?;
-                let is_multiline_string = self.starts_with("```") || self.starts_with("\"\"\"");
-                let scalar = self.parse_scalar_value(cur_indent)?;
-                if !is_multiline_string {
-                    self.consume_line()?;
+            // Check for duplicate immediately after parsing key, before parsing value
+            match dict.entry(key) {
+                Entry::Vacant(entry) => {
+                    let indicator = self.parse_indicator()?;
+                    let value = if indicator == ":" {
+                        self.assert_space("after ':'")?;
+                        let is_multiline_string = self.starts_with("```") || self.starts_with("\"\"\"");
+                        let scalar = self.parse_scalar_value(cur_indent)?;
+                        if !is_multiline_string {
+                            self.consume_line()?;
+                        }
+                        scalar
+                    } else {
+                        self.parse_vector(indent + 2)?
+                    };
+                    entry.insert(value);
                 }
-                scalar
-            } else {
-                self.parse_vector(indent + 2)?
-            };
-
-            dict.insert(key, value);
+                Entry::Occupied(e) => {
+                    return self.err(format!("duplicate key '{}' in dict", e.key()));
+                }
+            }
         }
 
         Ok(HumlValue::Dict(dict))
@@ -511,17 +512,23 @@ impl<'a> Parser<'a> {
                 let mut dict = HashMap::new();
                 self.parse_inline_items(|parser| {
                     let key = parser.parse_key()?;
-                    if parser.current_byte() != Some(b':') {
-                        return parser.err("expected ':' in inline dict");
+
+                    // Check for duplicate immediately after parsing key, before parsing value
+                    match dict.entry(key) {
+                        Entry::Vacant(entry) => {
+                            if parser.current_byte() != Some(b':') {
+                                return parser.err("expected ':' in inline dict");
+                            }
+                            parser.advance(1);
+                            parser.assert_space("in inline dict")?;
+                            let value = parser.parse_scalar_value(0)?;
+                            entry.insert(value);
+                            Ok(())
+                        }
+                        Entry::Occupied(e) => {
+                            parser.err(format!("duplicate key '{}' in dict", e.key()))
+                        }
                     }
-                    parser.advance(1);
-                    parser.assert_space("in inline dict")?;
-                    let value = parser.parse_scalar_value(0)?;
-                    if dict.contains_key(&key) {
-                        return parser.err(format!("duplicate key '{}' in dict", key));
-                    }
-                    dict.insert(key, value);
-                    Ok(())
                 })?;
                 Ok(HumlValue::Dict(dict))
             }
@@ -706,19 +713,18 @@ impl<'a> Parser<'a> {
             self.pos = line_start;
             let line_content = self.consume_line_content();
 
-            let processed = if preserve_spaces {
+            if preserve_spaces {
                 let required = key_indent + 2;
                 let bytes = line_content.as_bytes();
                 if bytes.len() >= required && bytes[..required].iter().all(|b| *b == b' ') {
-                    line_content[required..].to_string()
+                    out.push_str(&line_content[required..]);
                 } else {
-                    line_content
+                    out.push_str(line_content);
                 }
             } else {
-                line_content.trim().to_string()
+                out.push_str(line_content.trim());
             };
 
-            out.push_str(&processed);
             out.push('\n');
         }
     }
@@ -893,12 +899,12 @@ impl<'a> Parser<'a> {
         Ok(())
     }
 
-    fn consume_line_content(&mut self) -> String {
+    fn consume_line_content(&mut self) -> &'a str {
         let start = self.pos;
         while !self.done() && self.current_byte() != Some(b'\n') {
             self.advance(1);
         }
-        let content = self.input[start..self.pos].to_string();
+        let content = &self.input[start..self.pos];
         if self.current_byte() == Some(b'\n') {
             self.advance(1);
         }
