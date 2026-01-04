@@ -29,7 +29,7 @@ use huml_rs::parse_huml;
 
 fn main() {
     let huml_string = r#"
-%HUML v0.1.0
+%HUML v0.2.0
 
 app_name: "My Awesome App"
 version: "1.0"
@@ -235,7 +235,7 @@ This project includes comprehensive benchmarks using [Criterion.rs](https://gith
 - **Full Document Parsing**: Measures performance parsing the complete `test.huml` file
 - **Component Parsing**: Tests individual parsing functions (strings, numbers, booleans, etc.)
 - **Collection Parsing**: Benchmarks inline and multiline lists/dictionaries
-- **Multiline Strings**: Tests both preserved and stripped formatting
+- **Multiline Strings**: Tests multiline string parsing with preserved formatting
 - **Document Sizes**: Compares performance across small, medium, and large documents
 - **Edge Cases**: Tests long strings, deep nesting, and large collections
 - **Memory Usage**: Measures allocation patterns and repeated parsing

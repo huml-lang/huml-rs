@@ -125,27 +125,19 @@ foo_two:: # Yet another section.
 
 foo_three::
   # Multiline strings
-  foo_multiline_preserved: ```
+  foo_multiline_preserved: """
     Preserved formatting
       With different indentation
         And multiple levels
       Back to level two
     Back to level one
-  ```
-
-  bar_multiline_stripped: """
-    Stripped formatting
-      This will be normalized
-        All leading whitespace removed
-      Consistent indentation
-    Final line
   """
 
-  baz_multiline_edge: ```
+  baz_multiline_edge: """
     Line with no indent
         Line with indent
     Line back to no indent
-  ```
+  """
 
   # Boolean variations
   foo_booleans::

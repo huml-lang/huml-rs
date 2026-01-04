@@ -4,7 +4,7 @@
 //! These tests are maintained centrally and should be implemented by all HUML parsers.
 
 #[cfg(test)]
-use crate::{HumlNumber, HumlValue, parse_huml};
+use crate::{parse_huml, HumlNumber, HumlValue};
 #[cfg(test)]
 use serde_json::Value as JsonValue;
 #[cfg(test)]

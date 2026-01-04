@@ -1,6 +1,6 @@
 This is a parser for HUML.
 
-The specification is available at https://huml.io/specifications/v0-1-0/
+The specification is available at https://huml.io/specifications/v0-2-0/
 
 # AGENTS.md - Development Guidelines for huml-rs
 

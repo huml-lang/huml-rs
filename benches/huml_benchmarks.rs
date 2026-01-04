@@ -1,4 +1,4 @@
-use criterion::{Criterion, black_box, criterion_group, criterion_main};
+use criterion::{black_box, criterion_group, criterion_main, Criterion};
 use huml_rs::*;
 use std::fs;
 
@@ -160,32 +160,17 @@ fn benchmark_collections(c: &mut Criterion) {
 fn benchmark_multiline_strings(c: &mut Criterion) {
     let mut group = c.benchmark_group("parse_multiline_strings");
 
-    let preserved_string = r#"```
+    let multiline_string = r#""""
     Preserved formatting
       With different indentation
         And multiple levels
       Back to level two
     Back to level one
-  ```"#;
-
-    let stripped_string = r#""""
-    Stripped formatting
-      This will be normalized
-        All leading whitespace removed
-      Consistent indentation
-    Final line
   """"#;
 
-    group.bench_function("parse_multiline_preserved", |b| {
+    group.bench_function("parse_multiline_string", |b| {
         b.iter(|| {
-            let result = parse_scalar(black_box(preserved_string));
-            black_box(result)
-        })
-    });
-
-    group.bench_function("parse_multiline_stripped", |b| {
-        b.iter(|| {
-            let result = parse_scalar(black_box(stripped_string));
+            let result = parse_scalar(black_box(multiline_string));
             black_box(result)
         })
     });
@@ -216,11 +201,11 @@ section::
   strings::
     simple: "hello"
     complex: "Hello \"World\" with unicode: 中文 🚀"
-    multiline: ```
+    multiline: """
       Preserved
         formatting
       here
-    ```
+    """
   numbers::
     integer: 1234567
     float: 3.14159

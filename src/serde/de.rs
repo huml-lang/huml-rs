@@ -12,7 +12,7 @@
 //! - **Nested structures**: using proper HUML indentation
 //! - **Enums**: unit variants, struct variants, and tuple variants
 
-use crate::{HumlNumber, HumlValue, parse_huml};
+use crate::{parse_huml, HumlNumber, HumlValue};
 use serde::de::{self, Deserialize, DeserializeSeed, Visitor};
 use std::{fmt, str::FromStr};
 

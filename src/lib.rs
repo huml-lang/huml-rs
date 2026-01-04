@@ -6,8 +6,8 @@ pub mod serde;
 pub mod standard_tests;
 
 pub use parser::{
-    IResult, ParseError, parse_document_root, parse_empty_dict, parse_empty_list, parse_huml,
-    parse_inline_dict, parse_inline_list, parse_scalar,
+    parse_document_root, parse_empty_dict, parse_empty_list, parse_huml, parse_inline_dict,
+    parse_inline_list, parse_scalar, IResult, ParseError, HUML_VERSION,
 };
 
 #[derive(Debug, Clone, PartialEq)]
@@ -70,37 +70,15 @@ key2::
     }
 
     #[test]
-    fn multiline_string_with_backticks_preserves_dedented() {
-        let input = r#"text: ```
+    fn multiline_string_preserves_dedented() {
+        let input = r#"text: """
   line one
   line two
   line three
-```"#;
-        let (_, doc) = parse_huml(input).expect("should parse");
-        if let HumlValue::Dict(map) = doc.root {
-            if let Some(HumlValue::String(s)) = map.get("text") {
-                // With ```, preserves spaces: strips key_indent+2 (0+2=2 spaces)
-                // Lines have 2 spaces, so after stripping 2, we get empty prefix
-                assert_eq!(s, "line one\nline two\nline three");
-            } else {
-                panic!("expected string value");
-            }
-        } else {
-            panic!("expected dict");
-        }
-    }
-
-    #[test]
-    fn multiline_string_with_quotes_trims() {
-        let input = r#"text: """
-    line one
-    line two
-    line three
 """"#;
         let (_, doc) = parse_huml(input).expect("should parse");
         if let HumlValue::Dict(map) = doc.root {
             if let Some(HumlValue::String(s)) = map.get("text") {
-                // With """, trim() is called, removing all leading/trailing spaces
                 assert_eq!(s, "line one\nline two\nline three");
             } else {
                 panic!("expected string value");
@@ -111,20 +89,19 @@ key2::
     }
 
     #[test]
-    fn multiline_string_backticks_preserves_extra_spaces() {
-        let input = r#"text: ```
+    fn multiline_string_preserves_extra_spaces() {
+        let input = r#"text: """
     line with extra spaces
   line with minimal spaces
       line with many spaces
-```"#;
+""""#;
         let (_, doc) = parse_huml(input).expect("should parse");
         if let HumlValue::Dict(map) = doc.root {
             if let Some(HumlValue::String(s)) = map.get("text") {
-                // With ```, strips key_indent+2 (0+2=2 spaces), keeps rest
-                // Line 1: 4 spaces - 2 = "  line with extra spaces"
-                // Line 2: 2 spaces - 2 = "line with minimal spaces"
-                // Line 3: 6 spaces - 2 = "    line with many spaces"
-                assert_eq!(s, "  line with extra spaces\nline with minimal spaces\n    line with many spaces");
+                assert_eq!(
+                    s,
+                    "  line with extra spaces\nline with minimal spaces\n    line with many spaces"
+                );
             } else {
                 panic!("expected string value");
             }
@@ -134,12 +111,12 @@ key2::
     }
 
     #[test]
-    fn multiline_string_backticks_with_empty_lines() {
-        let input = r#"text: ```
+    fn multiline_string_with_empty_lines() {
+        let input = r#"text: """
   first line
 
   third line
-```"#;
+""""#;
         let (_, doc) = parse_huml(input).expect("should parse");
         if let HumlValue::Dict(map) = doc.root {
             if let Some(HumlValue::String(s)) = map.get("text") {
@@ -154,16 +131,49 @@ key2::
 
     #[test]
     fn multiline_string_minimal_indent() {
-        let input = r#"x: ```
+        let input = r#"x: """
 first
 second
-```"#;
+""""#;
         let (_, doc) = parse_huml(input).expect("should parse");
         if let HumlValue::Dict(map) = doc.root {
             if let Some(HumlValue::String(s)) = map.get("x") {
                 assert_eq!(s, "first\nsecond");
             } else {
                 panic!("expected string value");
+            }
+        } else {
+            panic!("expected dict");
+        }
+    }
+
+    #[test]
+    fn backticks_multiline_string_rejected() {
+        let input = r#"text: ```
+  line one
+```"#;
+        assert!(parse_huml(input).is_err());
+    }
+
+    #[test]
+    fn multiline_string_in_list() {
+        let input = r#"items::
+  - """
+    line one
+    line two
+  """
+  - "regular string""#;
+        let (_, doc) = parse_huml(input).expect("should parse");
+        if let HumlValue::Dict(map) = doc.root {
+            if let Some(HumlValue::List(items)) = map.get("items") {
+                assert_eq!(items.len(), 2);
+                if let HumlValue::String(s) = &items[0] {
+                    assert_eq!(s, "line one\nline two");
+                } else {
+                    panic!("expected string in list");
+                }
+            } else {
+                panic!("expected list");
             }
         } else {
             panic!("expected dict");

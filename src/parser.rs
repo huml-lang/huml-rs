@@ -3,6 +3,9 @@ use std::collections::hash_map::Entry;
 use std::collections::HashMap;
 use std::fmt;
 
+/// HUML specification version supported by this parser
+pub const HUML_VERSION: &str = "0.2.0";
+
 /// Result type used by all parser helpers. This mirrors the old `nom::IResult` interface
 /// so that downstream code can continue to destructure `(remaining, value)` tuples.
 pub type IResult<'a, T> = Result<(&'a str, T), ParseError>;
@@ -221,10 +224,10 @@ impl<'a> Parser<'a> {
                 let token = &self.input[start..self.pos];
                 if token.starts_with('v') {
                     let trimmed = token.trim_start_matches('v').to_string();
-                    if trimmed != "0.1.0" {
+                    if trimmed != HUML_VERSION {
                         return self.err(format!(
-                            "unsupported version 'v{}'. expected 'v0.1.0'",
-                            trimmed
+                            "unsupported version 'v{}'. expected 'v{}'",
+                            trimmed, HUML_VERSION
                         ));
                     }
                     version = Some(trimmed);
@@ -295,17 +298,16 @@ impl<'a> Parser<'a> {
         match self.current_byte().unwrap_or_default() {
             b'"' => {
                 if self.starts_with("\"\"\"") {
-                    let value = self.parse_multiline_string(key_indent, false)?;
+                    let value = self.parse_multiline_string(key_indent)?;
                     Ok(HumlValue::String(value))
                 } else {
                     let value = self.parse_string()?;
                     Ok(HumlValue::String(value))
                 }
             }
-            b'`' if self.starts_with("```") => {
-                let value = self.parse_multiline_string(key_indent, true)?;
-                Ok(HumlValue::String(value))
-            }
+            b'`' if self.starts_with("```") => self.err(
+                "triple-backtick multiline strings were removed in v0.2.0; use \"\"\" instead",
+            ),
             b't' if self.starts_with("true") => {
                 self.advance(4);
                 Ok(HumlValue::Boolean(true))
@@ -388,7 +390,7 @@ impl<'a> Parser<'a> {
                     let indicator = self.parse_indicator()?;
                     let value = if indicator == ":" {
                         self.assert_space("after ':'")?;
-                        let is_multiline_string = self.starts_with("```") || self.starts_with("\"\"\"");
+                        let is_multiline_string = self.starts_with("\"\"\"");
                         let scalar = self.parse_scalar_value(cur_indent)?;
                         if !is_multiline_string {
                             self.consume_line()?;
@@ -435,8 +437,11 @@ impl<'a> Parser<'a> {
                 self.advance(2);
                 self.parse_vector(indent + 2)?
             } else {
+                let is_multiline_string = self.starts_with("\"\"\"");
                 let scalar = self.parse_scalar_value(indent)?;
-                self.consume_line()?;
+                if !is_multiline_string {
+                    self.consume_line()?;
+                }
                 scalar
             };
 
@@ -668,11 +673,7 @@ impl<'a> Parser<'a> {
         self.err("unclosed string")
     }
 
-    fn parse_multiline_string(
-        &mut self,
-        key_indent: usize,
-        preserve_spaces: bool,
-    ) -> Result<String, ParseError> {
+    fn parse_multiline_string(&mut self, key_indent: usize) -> Result<String, ParseError> {
         if self.pos + 3 > self.len {
             return self.err("unterminated multiline string delimiter");
         }
@@ -713,17 +714,13 @@ impl<'a> Parser<'a> {
             self.pos = line_start;
             let line_content = self.consume_line_content();
 
-            if preserve_spaces {
-                let required = key_indent + 2;
-                let bytes = line_content.as_bytes();
-                if bytes.len() >= required && bytes[..required].iter().all(|b| *b == b' ') {
-                    out.push_str(&line_content[required..]);
-                } else {
-                    out.push_str(line_content);
-                }
+            let required = key_indent + 2;
+            let bytes = line_content.as_bytes();
+            if bytes.len() >= required && bytes[..required].iter().all(|b| *b == b' ') {
+                out.push_str(&line_content[required..]);
             } else {
-                out.push_str(line_content.trim());
-            };
+                out.push_str(line_content);
+            }
 
             out.push('\n');
         }
