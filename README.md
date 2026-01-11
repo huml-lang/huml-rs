@@ -4,7 +4,7 @@ This is a Rust library for the [HUML (Human-Usable Markup Language)](https://hum
 
 ## Features
 *   **Serde Support:** Full bidirectional support - serialize Rust structs to HUML and deserialize HUML into Rust structs.
-*   **Full compliant with HUML specification**
+*   **Fully compliant with HUML specification**
     *   Supports all HUML data types (string, number, boolean, array, object)
     *   Handles comments and whitespace correctly
 
