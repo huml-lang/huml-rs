@@ -75,193 +75,259 @@ impl From<io::Error> for Error {
 /// Result type for HUML serialization
 pub type Result<T> = std::result::Result<T, Error>;
 
-/// HUML serializer that writes to a string
-pub struct Serializer {
-    output: String,
-    indent_level: usize,
-}
-
-impl Serializer {
-    /// Create a new serializer
-    pub fn new() -> Self {
-        Self {
-            output: String::new(),
-            indent_level: 0,
-        }
-    }
-
-    /// Get the current indentation string
-    fn indent(&self) -> String {
-        "  ".repeat(self.indent_level)
-    }
-
-    /// Write a newline
-    fn newline(&mut self) {
-        self.output.push('\n');
-    }
-
-    /// Increase indentation level
-    fn increase_indent(&mut self) {
-        self.indent_level += 1;
-    }
-
-    /// Decrease indentation level
-    fn decrease_indent(&mut self) {
-        if self.indent_level > 0 {
-            self.indent_level -= 1;
-        }
-    }
-
-    /// Write a string value with proper HUML escaping
-    fn write_string(&mut self, s: &str) -> Result<()> {
-        self.output.push('"');
-        for ch in s.chars() {
-            match ch {
-                '"' => self.output.push_str("\\\""),
-                '\\' => self.output.push_str("\\\\"),
-                '\n' => self.output.push_str("\\n"),
-                '\t' => self.output.push_str("\\t"),
-                '\r' => self.output.push_str("\\r"),
-                '\x08' => self.output.push_str("\\b"),
-                '\x0C' => self.output.push_str("\\f"),
-                '/' => self.output.push_str("\\/"),
-                c if c.is_control() => {
-                    self.output.push_str(&format!("\\u{:04x}", c as u32));
-                }
-                c => self.output.push(c),
-            }
-        }
-        self.output.push('"');
-        Ok(())
-    }
-
-    /// Finish serialization and return the result
-    pub fn into_string(self) -> String {
-        self.output
-    }
-}
-
-impl Default for Serializer {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 /// Convenience function to serialize a value into a HUML string
+///
+/// The value is first collected into an ordered tree, then written out as HUML,
+/// so the syntax for each value (`:` or `::`, inline or block) is chosen from
+/// its type rather than from the text it produces.
 pub fn to_string<T>(value: &T) -> Result<String>
 where
-    T: Serialize,
+    T: ?Sized + Serialize,
 {
-    let mut serializer = Serializer::new();
-    value.serialize(&mut serializer)?;
-    Ok(serializer.into_string())
+    let value = value.serialize(ValueSerializer)?;
+    let mut output = String::new();
+    write_document(&mut output, &value);
+    Ok(output)
 }
 
-impl<'a> ser::Serializer for &'a mut Serializer {
-    type Ok = ();
+/// Intermediate tree built from serde calls. Maps keep insertion order.
+enum Value {
+    Null,
+    Bool(bool),
+    Int(i64),
+    UInt(u64),
+    Float(f64),
+    Str(String),
+    Seq(Vec<Value>),
+    Map(Vec<(String, Value)>),
+}
+
+impl Value {
+    fn is_scalar(&self) -> bool {
+        !matches!(self, Value::Seq(_) | Value::Map(_))
+    }
+}
+
+/// Write the document root.
+fn write_document(out: &mut String, value: &Value) {
+    match value {
+        // A single-item inline list at the root would read back as a scalar.
+        Value::Seq(items) if items.len() > 1 && items.iter().all(Value::is_scalar) => {
+            write_inline_list(out, items)
+        }
+        Value::Seq(items) if !items.is_empty() => write_list_block(out, items, 0),
+        Value::Map(entries) if !entries.is_empty() => write_dict_block(out, entries, 0),
+        Value::Seq(_) => out.push_str("[]"),
+        Value::Map(_) => out.push_str("{}"),
+        scalar => write_scalar(out, scalar),
+    }
+}
+
+/// Write the indicator and value that follow a dict key or a list item's `-`.
+/// `scalar_indicator` is what precedes a scalar: `": "` after a key, `""` after `- `.
+fn write_entry_value(out: &mut String, value: &Value, indent: usize, scalar_indicator: &str) {
+    match value {
+        Value::Seq(items) if items.is_empty() => out.push_str(":: []"),
+        Value::Map(entries) if entries.is_empty() => out.push_str(":: {}"),
+        Value::Seq(items) if items.iter().all(Value::is_scalar) => {
+            out.push_str(":: ");
+            write_inline_list(out, items);
+        }
+        Value::Seq(items) => {
+            out.push_str("::");
+            write_list_block(out, items, indent + 1);
+        }
+        Value::Map(entries) => {
+            out.push_str("::");
+            write_dict_block(out, entries, indent + 1);
+        }
+        scalar => {
+            out.push_str(scalar_indicator);
+            write_scalar(out, scalar);
+        }
+    }
+}
+
+fn write_dict_block(out: &mut String, entries: &[(String, Value)], indent: usize) {
+    for (key, value) in entries {
+        start_line(out, indent);
+        write_key(out, key);
+        write_entry_value(out, value, indent, ": ");
+    }
+}
+
+fn write_list_block(out: &mut String, items: &[Value], indent: usize) {
+    for item in items {
+        start_line(out, indent);
+        out.push_str("- ");
+        write_entry_value(out, item, indent, "");
+    }
+}
+
+fn write_inline_list(out: &mut String, items: &[Value]) {
+    for (i, item) in items.iter().enumerate() {
+        if i > 0 {
+            out.push_str(", ");
+        }
+        write_scalar(out, item);
+    }
+}
+
+/// Start a new line at the given indent level. The document's first line needs no newline.
+fn start_line(out: &mut String, indent: usize) {
+    if !out.is_empty() {
+        out.push('\n');
+    }
+    for _ in 0..indent {
+        out.push_str("  ");
+    }
+}
+
+fn write_key(out: &mut String, key: &str) {
+    if is_valid_unquoted_key(key) {
+        out.push_str(key);
+    } else {
+        write_string(out, key);
+    }
+}
+
+fn write_scalar(out: &mut String, value: &Value) {
+    match value {
+        Value::Null => out.push_str("null"),
+        Value::Bool(b) => out.push_str(if *b { "true" } else { "false" }),
+        Value::Int(i) => out.push_str(&i.to_string()),
+        Value::UInt(u) => out.push_str(&u.to_string()),
+        Value::Float(f) if f.is_nan() => out.push_str("nan"),
+        Value::Float(f) if f.is_infinite() => {
+            out.push_str(if f.is_sign_positive() { "inf" } else { "-inf" })
+        }
+        // Debug keeps a fractional part (`1.0`, not `1`) so floats read back as floats.
+        Value::Float(f) => out.push_str(&format!("{f:?}")),
+        Value::Str(s) => write_string(out, s),
+        Value::Seq(_) | Value::Map(_) => unreachable!("write_scalar called with a vector"),
+    }
+}
+
+/// Write a string value with proper HUML escaping
+fn write_string(out: &mut String, s: &str) {
+    out.push('"');
+    for ch in s.chars() {
+        match ch {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\t' => out.push_str("\\t"),
+            '\r' => out.push_str("\\r"),
+            '\x08' => out.push_str("\\b"),
+            '\x0C' => out.push_str("\\f"),
+            c if c.is_control() => out.push_str(&format!("\\u{:04x}", c as u32)),
+            c => out.push(c),
+        }
+    }
+    out.push('"');
+}
+
+/// Check if a string can be used as an unquoted key in HUML.
+/// Matches the parser: an ASCII letter, then ASCII letters, digits, `_` or `-`.
+fn is_valid_unquoted_key(s: &str) -> bool {
+    let mut chars = s.chars();
+    match chars.next() {
+        Some(c) if c.is_ascii_alphabetic() => {}
+        _ => return false,
+    }
+    chars.all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+}
+
+/// Serde serializer that builds a [`Value`] tree.
+struct ValueSerializer;
+
+impl ser::Serializer for ValueSerializer {
+    type Ok = Value;
     type Error = Error;
 
-    type SerializeSeq = SeqSerializer<'a>;
-    type SerializeTuple = SeqSerializer<'a>;
-    type SerializeTupleStruct = SeqSerializer<'a>;
-    type SerializeTupleVariant = TupleVariantSerializer<'a>;
-    type SerializeMap = MapSerializer<'a>;
-    type SerializeStruct = MapSerializer<'a>;
-    type SerializeStructVariant = StructVariantSerializer<'a>;
+    type SerializeSeq = SeqBuilder;
+    type SerializeTuple = SeqBuilder;
+    type SerializeTupleStruct = SeqBuilder;
+    type SerializeTupleVariant = TupleVariantBuilder;
+    type SerializeMap = MapBuilder;
+    type SerializeStruct = MapBuilder;
+    type SerializeStructVariant = StructVariantBuilder;
 
-    fn serialize_bool(self, v: bool) -> Result<()> {
-        self.output.push_str(if v { "true" } else { "false" });
-        Ok(())
+    fn serialize_bool(self, v: bool) -> Result<Value> {
+        Ok(Value::Bool(v))
     }
 
-    fn serialize_i8(self, v: i8) -> Result<()> {
-        self.serialize_i64(v as i64)
+    fn serialize_i8(self, v: i8) -> Result<Value> {
+        Ok(Value::Int(v.into()))
     }
 
-    fn serialize_i16(self, v: i16) -> Result<()> {
-        self.serialize_i64(v as i64)
+    fn serialize_i16(self, v: i16) -> Result<Value> {
+        Ok(Value::Int(v.into()))
     }
 
-    fn serialize_i32(self, v: i32) -> Result<()> {
-        self.serialize_i64(v as i64)
+    fn serialize_i32(self, v: i32) -> Result<Value> {
+        Ok(Value::Int(v.into()))
     }
 
-    fn serialize_i64(self, v: i64) -> Result<()> {
-        self.output.push_str(&v.to_string());
-        Ok(())
+    fn serialize_i64(self, v: i64) -> Result<Value> {
+        Ok(Value::Int(v))
     }
 
-    fn serialize_u8(self, v: u8) -> Result<()> {
-        self.serialize_u64(v as u64)
+    fn serialize_u8(self, v: u8) -> Result<Value> {
+        Ok(Value::UInt(v.into()))
     }
 
-    fn serialize_u16(self, v: u16) -> Result<()> {
-        self.serialize_u64(v as u64)
+    fn serialize_u16(self, v: u16) -> Result<Value> {
+        Ok(Value::UInt(v.into()))
     }
 
-    fn serialize_u32(self, v: u32) -> Result<()> {
-        self.serialize_u64(v as u64)
+    fn serialize_u32(self, v: u32) -> Result<Value> {
+        Ok(Value::UInt(v.into()))
     }
 
-    fn serialize_u64(self, v: u64) -> Result<()> {
-        self.output.push_str(&v.to_string());
-        Ok(())
+    fn serialize_u64(self, v: u64) -> Result<Value> {
+        Ok(Value::UInt(v))
     }
 
-    fn serialize_f32(self, v: f32) -> Result<()> {
-        self.serialize_f64(v as f64)
+    fn serialize_f32(self, v: f32) -> Result<Value> {
+        Ok(Value::Float(v.into()))
     }
 
-    fn serialize_f64(self, v: f64) -> Result<()> {
-        if v.is_nan() {
-            self.output.push_str("nan");
-        } else if v.is_infinite() {
-            if v.is_sign_positive() {
-                self.output.push_str("inf");
-            } else {
-                self.output.push_str("-inf");
-            }
-        } else {
-            self.output.push_str(&v.to_string());
-        }
-        Ok(())
+    fn serialize_f64(self, v: f64) -> Result<Value> {
+        Ok(Value::Float(v))
     }
 
-    fn serialize_char(self, v: char) -> Result<()> {
-        self.write_string(&v.to_string())
+    fn serialize_char(self, v: char) -> Result<Value> {
+        Ok(Value::Str(v.to_string()))
     }
 
-    fn serialize_str(self, v: &str) -> Result<()> {
-        self.write_string(v)
+    fn serialize_str(self, v: &str) -> Result<Value> {
+        Ok(Value::Str(v.to_string()))
     }
 
-    fn serialize_bytes(self, v: &[u8]) -> Result<()> {
-        use ser::SerializeSeq;
-        let mut seq = self.serialize_seq(Some(v.len()))?;
-        for byte in v {
-            seq.serialize_element(byte)?;
-        }
-        seq.end()
+    fn serialize_bytes(self, v: &[u8]) -> Result<Value> {
+        Ok(Value::Seq(
+            v.iter().map(|&b| Value::UInt(b.into())).collect(),
+        ))
     }
 
-    fn serialize_none(self) -> Result<()> {
-        self.serialize_unit()
+    fn serialize_none(self) -> Result<Value> {
+        Ok(Value::Null)
     }
 
-    fn serialize_some<T>(self, value: &T) -> Result<()>
+    fn serialize_some<T>(self, value: &T) -> Result<Value>
     where
         T: ?Sized + Serialize,
     {
         value.serialize(self)
     }
 
-    fn serialize_unit(self) -> Result<()> {
-        self.output.push_str("null");
-        Ok(())
+    fn serialize_unit(self) -> Result<Value> {
+        Ok(Value::Null)
     }
 
-    fn serialize_unit_struct(self, _name: &'static str) -> Result<()> {
-        self.serialize_unit()
+    fn serialize_unit_struct(self, _name: &'static str) -> Result<Value> {
+        Ok(Value::Null)
     }
 
     fn serialize_unit_variant(
@@ -269,11 +335,11 @@ impl<'a> ser::Serializer for &'a mut Serializer {
         _name: &'static str,
         _variant_index: u32,
         variant: &'static str,
-    ) -> Result<()> {
-        self.serialize_str(variant)
+    ) -> Result<Value> {
+        Ok(Value::Str(variant.to_string()))
     }
 
-    fn serialize_newtype_struct<T>(self, _name: &'static str, value: &T) -> Result<()>
+    fn serialize_newtype_struct<T>(self, _name: &'static str, value: &T) -> Result<Value>
     where
         T: ?Sized + Serialize,
     {
@@ -286,34 +352,27 @@ impl<'a> ser::Serializer for &'a mut Serializer {
         _variant_index: u32,
         variant: &'static str,
         value: &T,
-    ) -> Result<()>
+    ) -> Result<Value>
     where
         T: ?Sized + Serialize,
     {
-        self.output.push_str(variant);
-        self.output.push_str(": ");
-        value.serialize(self)?;
-        Ok(())
+        Ok(Value::Map(vec![(
+            variant.to_string(),
+            value.serialize(self)?,
+        )]))
     }
 
-    fn serialize_seq(self, len: Option<usize>) -> Result<Self::SerializeSeq> {
-        if len == Some(0) {
-            self.output.push_str("[]");
-            Ok(SeqSerializer::empty(self))
-        } else {
-            Ok(SeqSerializer::new(self))
-        }
+    fn serialize_seq(self, len: Option<usize>) -> Result<SeqBuilder> {
+        Ok(SeqBuilder {
+            items: Vec::with_capacity(len.unwrap_or(0)),
+        })
     }
 
-    fn serialize_tuple(self, len: usize) -> Result<Self::SerializeTuple> {
+    fn serialize_tuple(self, len: usize) -> Result<SeqBuilder> {
         self.serialize_seq(Some(len))
     }
 
-    fn serialize_tuple_struct(
-        self,
-        _name: &'static str,
-        len: usize,
-    ) -> Result<Self::SerializeTupleStruct> {
+    fn serialize_tuple_struct(self, _name: &'static str, len: usize) -> Result<SeqBuilder> {
         self.serialize_seq(Some(len))
     }
 
@@ -322,23 +381,22 @@ impl<'a> ser::Serializer for &'a mut Serializer {
         _name: &'static str,
         _variant_index: u32,
         variant: &'static str,
-        _len: usize,
-    ) -> Result<Self::SerializeTupleVariant> {
-        self.output.push_str(variant);
-        self.output.push_str(": ");
-        Ok(TupleVariantSerializer::new(self))
+        len: usize,
+    ) -> Result<TupleVariantBuilder> {
+        Ok(TupleVariantBuilder {
+            variant,
+            items: Vec::with_capacity(len),
+        })
     }
 
-    fn serialize_map(self, len: Option<usize>) -> Result<Self::SerializeMap> {
-        if len == Some(0) {
-            self.output.push_str("{}");
-            Ok(MapSerializer::empty(self))
-        } else {
-            Ok(MapSerializer::new(self, false))
-        }
+    fn serialize_map(self, len: Option<usize>) -> Result<MapBuilder> {
+        Ok(MapBuilder {
+            entries: Vec::with_capacity(len.unwrap_or(0)),
+            next_key: None,
+        })
     }
 
-    fn serialize_struct(self, _name: &'static str, len: usize) -> Result<Self::SerializeStruct> {
+    fn serialize_struct(self, _name: &'static str, len: usize) -> Result<MapBuilder> {
         self.serialize_map(Some(len))
     }
 
@@ -347,69 +405,39 @@ impl<'a> ser::Serializer for &'a mut Serializer {
         _name: &'static str,
         _variant_index: u32,
         variant: &'static str,
-        _len: usize,
-    ) -> Result<Self::SerializeStructVariant> {
-        self.output.push_str(variant);
-        self.output.push_str("::");
-        self.output.push('\n');
-        Ok(StructVariantSerializer::new(self))
+        len: usize,
+    ) -> Result<StructVariantBuilder> {
+        Ok(StructVariantBuilder {
+            variant,
+            entries: Vec::with_capacity(len),
+        })
     }
 }
 
-/// Serializer for sequences (lists, tuples)
-pub struct SeqSerializer<'a> {
-    ser: &'a mut Serializer,
-    first: bool,
-    empty: bool,
+/// Builder for sequences (lists, tuples)
+struct SeqBuilder {
+    items: Vec<Value>,
 }
 
-impl<'a> SeqSerializer<'a> {
-    fn new(ser: &'a mut Serializer) -> Self {
-        Self {
-            ser,
-            first: true,
-            empty: false,
-        }
-    }
-
-    fn empty(ser: &'a mut Serializer) -> Self {
-        Self {
-            ser,
-            first: true,
-            empty: true,
-        }
-    }
-}
-
-impl<'a> ser::SerializeSeq for SeqSerializer<'a> {
-    type Ok = ();
+impl ser::SerializeSeq for SeqBuilder {
+    type Ok = Value;
     type Error = Error;
 
     fn serialize_element<T>(&mut self, value: &T) -> Result<()>
     where
         T: ?Sized + Serialize,
     {
-        if self.empty {
-            return Ok(());
-        }
-
-        if self.first {
-            self.first = false;
-        } else {
-            self.ser.output.push_str(", ");
-        }
-
-        value.serialize(&mut *self.ser)?;
+        self.items.push(value.serialize(ValueSerializer)?);
         Ok(())
     }
 
-    fn end(self) -> Result<()> {
-        Ok(())
+    fn end(self) -> Result<Value> {
+        Ok(Value::Seq(self.items))
     }
 }
 
-impl<'a> ser::SerializeTuple for SeqSerializer<'a> {
-    type Ok = ();
+impl ser::SerializeTuple for SeqBuilder {
+    type Ok = Value;
     type Error = Error;
 
     fn serialize_element<T>(&mut self, value: &T) -> Result<()>
@@ -419,13 +447,13 @@ impl<'a> ser::SerializeTuple for SeqSerializer<'a> {
         ser::SerializeSeq::serialize_element(self, value)
     }
 
-    fn end(self) -> Result<()> {
+    fn end(self) -> Result<Value> {
         ser::SerializeSeq::end(self)
     }
 }
 
-impl<'a> ser::SerializeTupleStruct for SeqSerializer<'a> {
-    type Ok = ();
+impl ser::SerializeTupleStruct for SeqBuilder {
+    type Ok = Value;
     type Error = Error;
 
     fn serialize_field<T>(&mut self, value: &T) -> Result<()>
@@ -435,112 +463,63 @@ impl<'a> ser::SerializeTupleStruct for SeqSerializer<'a> {
         ser::SerializeSeq::serialize_element(self, value)
     }
 
-    fn end(self) -> Result<()> {
+    fn end(self) -> Result<Value> {
         ser::SerializeSeq::end(self)
     }
 }
 
-/// Serializer for tuple variants
-pub struct TupleVariantSerializer<'a> {
-    ser: &'a mut Serializer,
-    first: bool,
+/// Builder for tuple variants, written as `Variant:: a, b`
+struct TupleVariantBuilder {
+    variant: &'static str,
+    items: Vec<Value>,
 }
 
-impl<'a> TupleVariantSerializer<'a> {
-    fn new(ser: &'a mut Serializer) -> Self {
-        Self { ser, first: true }
-    }
-}
-
-impl<'a> ser::SerializeTupleVariant for TupleVariantSerializer<'a> {
-    type Ok = ();
+impl ser::SerializeTupleVariant for TupleVariantBuilder {
+    type Ok = Value;
     type Error = Error;
 
     fn serialize_field<T>(&mut self, value: &T) -> Result<()>
     where
         T: ?Sized + Serialize,
     {
-        if self.first {
-            self.first = false;
-        } else {
-            self.ser.output.push_str(", ");
-        }
-        value.serialize(&mut *self.ser)?;
+        self.items.push(value.serialize(ValueSerializer)?);
         Ok(())
     }
 
-    fn end(self) -> Result<()> {
-        Ok(())
+    fn end(self) -> Result<Value> {
+        Ok(Value::Map(vec![(
+            self.variant.to_string(),
+            Value::Seq(self.items),
+        )]))
     }
 }
 
-/// Serializer for maps and structs
-pub struct MapSerializer<'a> {
-    ser: &'a mut Serializer,
-    first: bool,
-    empty: bool,
-    inline: bool,
+/// Builder for maps and structs
+struct MapBuilder {
+    entries: Vec<(String, Value)>,
+    next_key: Option<String>,
 }
 
-impl<'a> MapSerializer<'a> {
-    fn new(ser: &'a mut Serializer, inline: bool) -> Self {
-        Self {
-            ser,
-            first: true,
-            empty: false,
-            inline,
-        }
-    }
-
-    fn empty(ser: &'a mut Serializer) -> Self {
-        Self {
-            ser,
-            first: true,
-            empty: true,
-            inline: false,
-        }
-    }
-}
-
-impl<'a> ser::SerializeMap for MapSerializer<'a> {
-    type Ok = ();
+impl ser::SerializeMap for MapBuilder {
+    type Ok = Value;
     type Error = Error;
 
     fn serialize_key<T>(&mut self, key: &T) -> Result<()>
     where
         T: ?Sized + Serialize,
     {
-        if self.empty {
-            return Ok(());
-        }
-
-        if self.first {
-            self.first = false;
-        } else if self.inline {
-            self.ser.output.push_str(", ");
-        } else {
-            self.ser.newline();
-        }
-
-        if !self.inline {
-            self.ser.output.push_str(&self.ser.indent());
-        }
-
-        // Serialize the key - for HUML, keys should be unquoted if possible
-        let start_pos = self.ser.output.len();
-        key.serialize(&mut *self.ser)?;
-
-        // Check if we need to unquote the key (if it's a simple string)
-        let key_str = self.ser.output[start_pos..].to_string();
-        if key_str.starts_with('"') && key_str.ends_with('"') {
-            let unquoted = &key_str[1..key_str.len() - 1];
-            if is_valid_unquoted_key(unquoted) {
-                // Replace the quoted key with unquoted version
-                self.ser.output.truncate(start_pos);
-                self.ser.output.push_str(unquoted);
+        let key = match key.serialize(ValueSerializer)? {
+            Value::Str(s) => s,
+            Value::Int(i) => i.to_string(),
+            Value::UInt(u) => u.to_string(),
+            Value::Bool(b) => b.to_string(),
+            _ => {
+                return Err(Error::UnsupportedType(
+                    "map key must be a string, integer or bool",
+                ));
             }
-        }
-
+        };
+        self.next_key = Some(key);
         Ok(())
     }
 
@@ -548,131 +527,62 @@ impl<'a> ser::SerializeMap for MapSerializer<'a> {
     where
         T: ?Sized + Serialize,
     {
-        if self.empty {
-            return Ok(());
-        }
-
-        // Check what kind of value we're serializing
-        let start_pos = self.ser.output.len();
-
-        // Serialize the value to see what it looks like
-        let value_start = self.ser.output.len();
-        value.serialize(&mut *self.ser)?;
-        let value_str = self.ser.output[value_start..].to_string();
-
-        // Determine if we need special HUML syntax
-        if value_str.contains('\n') {
-            // Multi-line value - use :: syntax
-            self.ser.output.insert_str(start_pos, "::");
-            self.ser.output.insert(start_pos + 2, '\n');
-            // Re-indent all lines in the value
-            let lines: Vec<&str> = value_str.lines().collect();
-            if lines.len() > 1 {
-                self.ser.output.truncate(value_start + 3); // Keep "::\n"
-                self.ser.increase_indent();
-                for (i, line) in lines.iter().enumerate() {
-                    if i > 0 {
-                        self.ser.newline();
-                    }
-                    if !line.trim().is_empty() {
-                        self.ser.output.push_str(&self.ser.indent());
-                        self.ser.output.push_str(line.trim());
-                    }
-                }
-                self.ser.decrease_indent();
-            }
-        } else if value_str.contains(", ")
-            && !value_str.starts_with('{')
-            && !value_str.is_empty()
-            && value_str != "[]"
-            && value_str != "{}"
-        {
-            // Inline list - use :: syntax
-            self.ser.output.insert_str(start_pos, ":: ");
-        } else {
-            // Regular scalar value - use : syntax
-            self.ser.output.insert_str(start_pos, ": ");
-        }
-
+        let key = self
+            .next_key
+            .take()
+            .ok_or_else(|| Error::Message("serialize_value called before serialize_key".into()))?;
+        self.entries.push((key, value.serialize(ValueSerializer)?));
         Ok(())
     }
 
-    fn end(self) -> Result<()> {
-        Ok(())
+    fn end(self) -> Result<Value> {
+        Ok(Value::Map(self.entries))
     }
 }
 
-impl<'a> ser::SerializeStruct for MapSerializer<'a> {
-    type Ok = ();
+impl ser::SerializeStruct for MapBuilder {
+    type Ok = Value;
     type Error = Error;
 
     fn serialize_field<T>(&mut self, key: &'static str, value: &T) -> Result<()>
     where
         T: ?Sized + Serialize,
     {
-        ser::SerializeMap::serialize_entry(self, key, value)
+        self.entries
+            .push((key.to_string(), value.serialize(ValueSerializer)?));
+        Ok(())
     }
 
-    fn end(self) -> Result<()> {
-        ser::SerializeMap::end(self)
-    }
-}
-
-/// Serializer for struct variants
-pub struct StructVariantSerializer<'a> {
-    ser: &'a mut Serializer,
-    first: bool,
-}
-
-impl<'a> StructVariantSerializer<'a> {
-    fn new(ser: &'a mut Serializer) -> Self {
-        ser.increase_indent();
-        Self { ser, first: true }
+    fn end(self) -> Result<Value> {
+        Ok(Value::Map(self.entries))
     }
 }
 
-impl<'a> ser::SerializeStructVariant for StructVariantSerializer<'a> {
-    type Ok = ();
+/// Builder for struct variants, written as `Variant::` followed by the fields
+struct StructVariantBuilder {
+    variant: &'static str,
+    entries: Vec<(String, Value)>,
+}
+
+impl ser::SerializeStructVariant for StructVariantBuilder {
+    type Ok = Value;
     type Error = Error;
 
     fn serialize_field<T>(&mut self, key: &'static str, value: &T) -> Result<()>
     where
         T: ?Sized + Serialize,
     {
-        if self.first {
-            self.first = false;
-        } else {
-            self.ser.newline();
-        }
-
-        self.ser.output.push_str(&self.ser.indent());
-        self.ser.output.push_str(key);
-        self.ser.output.push_str(": ");
-        value.serialize(&mut *self.ser)?;
+        self.entries
+            .push((key.to_string(), value.serialize(ValueSerializer)?));
         Ok(())
     }
 
-    fn end(self) -> Result<()> {
-        self.ser.decrease_indent();
-        Ok(())
+    fn end(self) -> Result<Value> {
+        Ok(Value::Map(vec![(
+            self.variant.to_string(),
+            Value::Map(self.entries),
+        )]))
     }
-}
-
-/// Check if a string can be used as an unquoted key in HUML
-fn is_valid_unquoted_key(s: &str) -> bool {
-    if s.is_empty() {
-        return false;
-    }
-
-    // First character must be alphabetic or underscore
-    let mut chars = s.chars();
-    match chars.next() {
-        Some(c) if c.is_alphabetic() || c == '_' => {}
-        _ => return false,
-    }
-
-    // Remaining characters must be alphanumeric, underscore, or hyphen
-    chars.all(|c| c.is_alphanumeric() || c == '_' || c == '-')
 }
 
 #[cfg(test)]
@@ -786,14 +696,17 @@ mod tests {
         assert!(is_valid_unquoted_key("simple"));
         assert!(is_valid_unquoted_key("with_underscore"));
         assert!(is_valid_unquoted_key("with-hyphen"));
-        assert!(is_valid_unquoted_key("_starts_with_underscore"));
         assert!(is_valid_unquoted_key("key123"));
+        assert!(is_valid_unquoted_key("X-Env"));
 
         assert!(!is_valid_unquoted_key(""));
         assert!(!is_valid_unquoted_key("123key"));
         assert!(!is_valid_unquoted_key("with spaces"));
         assert!(!is_valid_unquoted_key("with.dot"));
         assert!(!is_valid_unquoted_key("with:colon"));
+        // The parser only accepts an ASCII letter as the first character of a bare key.
+        assert!(!is_valid_unquoted_key("_starts_with_underscore"));
+        assert!(!is_valid_unquoted_key("café"));
     }
 
     #[test]
@@ -854,5 +767,244 @@ mod tests {
         assert!(huml.contains("config::\n"));
         assert!(huml.contains("  enabled: true"));
         assert!(huml.contains("  timeout: 30"));
+    }
+
+    /// Serialize, parse back into the same type, and return the HUML text.
+    fn round_trip<T>(value: &T) -> String
+    where
+        T: Serialize + for<'de> serde::Deserialize<'de> + PartialEq + std::fmt::Debug,
+    {
+        let huml = to_string(value).unwrap();
+        let back: T = crate::serde::from_str(&huml)
+            .unwrap_or_else(|e| panic!("failed to parse back {huml:?}: {e}"));
+        assert_eq!(
+            &back, value,
+            "round trip changed the value, HUML was:\n{huml}"
+        );
+        huml
+    }
+
+    #[derive(Debug, PartialEq, Serialize, serde::Deserialize)]
+    struct Target {
+        host: String,
+        port: u16,
+    }
+
+    #[test]
+    fn test_list_of_structs() {
+        #[derive(Debug, PartialEq, Serialize, serde::Deserialize)]
+        struct Config {
+            targets: Vec<Target>,
+        }
+
+        let config = Config {
+            targets: vec![
+                Target {
+                    host: "10.0.0.1".into(),
+                    port: 80,
+                },
+                Target {
+                    host: "10.0.0.2".into(),
+                    port: 81,
+                },
+            ],
+        };
+        assert_eq!(
+            round_trip(&config),
+            "targets::\n  - ::\n    host: \"10.0.0.1\"\n    port: 80\n  - ::\n    host: \"10.0.0.2\"\n    port: 81"
+        );
+    }
+
+    #[test]
+    fn test_one_item_list_stays_a_list() {
+        #[derive(Debug, PartialEq, Serialize, serde::Deserialize)]
+        struct Paths {
+            paths: Vec<String>,
+        }
+
+        let paths = Paths {
+            paths: vec!["/".into()],
+        };
+        assert_eq!(round_trip(&paths), "paths:: \"/\"");
+    }
+
+    #[test]
+    fn test_string_with_comma_stays_a_string() {
+        #[derive(Debug, PartialEq, Serialize, serde::Deserialize)]
+        struct Note {
+            note: String,
+        }
+
+        let note = Note {
+            note: "a, b".into(),
+        };
+        assert_eq!(round_trip(&note), "note: \"a, b\"");
+    }
+
+    #[test]
+    fn test_deeply_nested_dicts_keep_indentation() {
+        #[derive(Debug, PartialEq, Serialize, serde::Deserialize)]
+        struct Deeper {
+            x: u32,
+            y: u32,
+        }
+        #[derive(Debug, PartialEq, Serialize, serde::Deserialize)]
+        struct Inner {
+            deep: Deeper,
+        }
+        #[derive(Debug, PartialEq, Serialize, serde::Deserialize)]
+        struct Nested {
+            outer: Inner,
+        }
+
+        let nested = Nested {
+            outer: Inner {
+                deep: Deeper { x: 1, y: 2 },
+            },
+        };
+        assert_eq!(round_trip(&nested), "outer::\n  deep::\n    x: 1\n    y: 2");
+    }
+
+    #[test]
+    fn test_forward_slash_not_escaped() {
+        assert_eq!(to_string("/healthz").unwrap(), "\"/healthz\"");
+        assert_eq!(
+            to_string("https://example.com").unwrap(),
+            "\"https://example.com\""
+        );
+    }
+
+    #[test]
+    fn test_strings_with_syntax_characters_in_lists() {
+        #[derive(Debug, PartialEq, Serialize, serde::Deserialize)]
+        struct Urls {
+            urls: Vec<String>,
+            single: Vec<String>,
+        }
+
+        let urls = Urls {
+            urls: vec!["https://a.example".into(), "b, c # d".into()],
+            single: vec!["https://only.example".into()],
+        };
+        round_trip(&urls);
+    }
+
+    #[test]
+    fn test_list_of_lists() {
+        let lists: Vec<Vec<u32>> = vec![vec![1, 2], vec![], vec![3]];
+        assert_eq!(round_trip(&lists), "- :: 1, 2\n- :: []\n- :: 3");
+
+        let nested: Vec<Vec<Vec<u32>>> = vec![vec![vec![1], vec![2, 3]]];
+        round_trip(&nested);
+    }
+
+    #[test]
+    fn test_list_mixing_scalars_and_dicts() {
+        let mixed = serde_json::json!({
+            "items": [1, "two", {"three": 3}, [4, 5], null, {}]
+        });
+        let huml = to_string(&mixed).unwrap();
+        let back: serde_json::Value = crate::serde::from_str(&huml).unwrap();
+        assert_eq!(back, mixed, "HUML was:\n{huml}");
+    }
+
+    #[test]
+    fn test_keys_that_need_quoting() {
+        use std::collections::BTreeMap;
+
+        let map: BTreeMap<String, u32> = [
+            ("X-Env", 1),
+            ("with space", 2),
+            ("1abc", 3),
+            ("_private", 4),
+            ("a:b", 5),
+        ]
+        .into_iter()
+        .map(|(k, v)| (k.to_string(), v))
+        .collect();
+        let huml = round_trip(&map);
+        assert!(huml.contains("X-Env: 1"));
+        assert!(huml.contains("\"with space\": 2"));
+        assert!(huml.contains("\"_private\": 4"));
+    }
+
+    #[test]
+    fn test_escaped_newline_is_a_scalar() {
+        #[derive(Debug, PartialEq, Serialize, serde::Deserialize)]
+        struct Text {
+            text: String,
+            after: u32,
+        }
+
+        let text = Text {
+            text: "line one\nline two".into(),
+            after: 1,
+        };
+        assert_eq!(round_trip(&text), "text: \"line one\\nline two\"\nafter: 1");
+    }
+
+    #[test]
+    fn test_root_values() {
+        round_trip(&vec![Target {
+            host: "h".into(),
+            port: 1,
+        }]);
+        assert_eq!(round_trip(&vec!["only".to_string()]), "- \"only\"");
+        assert_eq!(round_trip(&"a, b".to_string()), "\"a, b\"");
+    }
+
+    #[test]
+    fn test_enum_variants_round_trip() {
+        #[derive(Debug, PartialEq, Serialize, serde::Deserialize)]
+        enum Action {
+            Stop,
+            Wait(u32),
+            Move(i32, i32),
+            Forward { target: Target },
+        }
+        #[derive(Debug, PartialEq, Serialize, serde::Deserialize)]
+        struct Rule {
+            actions: Vec<Action>,
+            fallback: Action,
+        }
+
+        round_trip(&Rule {
+            actions: vec![
+                Action::Stop,
+                Action::Wait(5),
+                Action::Move(1, -1),
+                Action::Forward {
+                    target: Target {
+                        host: "h".into(),
+                        port: 1,
+                    },
+                },
+            ],
+            fallback: Action::Move(0, 0),
+        });
+    }
+
+    #[test]
+    fn test_floats_and_options_round_trip() {
+        #[derive(Debug, PartialEq, Serialize, serde::Deserialize)]
+        struct Numbers {
+            whole: f64,
+            small: f64,
+            missing: Option<u32>,
+            present: Option<u32>,
+        }
+
+        let huml = round_trip(&Numbers {
+            whole: 1.0,
+            small: 1e-7,
+            missing: None,
+            present: Some(3),
+        });
+        assert!(huml.contains("whole: 1.0"));
+        assert!(huml.contains("missing: null"));
+
+        // Untyped readers must still see a float, not an integer.
+        let back: serde_json::Value = crate::serde::from_str(&huml).unwrap();
+        assert!(back["whole"].is_f64());
     }
 }
