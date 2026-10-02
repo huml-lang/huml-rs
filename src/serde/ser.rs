@@ -664,7 +664,7 @@ mod tests {
     fn test_serialize_primitive_types() {
         assert_eq!(to_string(&"hello").unwrap(), "\"hello\"");
         assert_eq!(to_string(&42).unwrap(), "42");
-        assert_eq!(to_string(&3.14).unwrap(), "3.14");
+        assert_eq!(to_string(&2.5).unwrap(), "2.5");
         assert_eq!(to_string(&true).unwrap(), "true");
         assert_eq!(to_string(&false).unwrap(), "false");
 
@@ -759,7 +759,7 @@ mod tests {
         let result: NestedExample = crate::serde::from_str(&huml).unwrap();
         assert_eq!(result.name, "test");
         assert_eq!(result.scores, vec![1, 2, 3]);
-        assert_eq!(result.config.enabled, true);
+        assert!(result.config.enabled);
         assert_eq!(result.config.timeout, 30);
 
         // Should use proper HUML formatting with :: syntax and indentation

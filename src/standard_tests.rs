@@ -4,7 +4,7 @@
 //! These tests are maintained centrally and should be implemented by all HUML parsers.
 
 #[cfg(test)]
-use crate::{parse_huml, HumlNumber, HumlValue};
+use crate::{HumlNumber, HumlValue, parse_huml};
 #[cfg(test)]
 use serde_json::Value as JsonValue;
 #[cfg(test)]
@@ -123,7 +123,7 @@ fn values_match_with_multiline_tolerance(expected: &JsonValue, actual: &JsonValu
         (JsonValue::Object(exp_obj), JsonValue::Object(act_obj)) => {
             exp_obj.len() == act_obj.len()
                 && exp_obj.iter().all(|(key, exp_val)| {
-                    act_obj.get(key).map_or(false, |act_val| {
+                    act_obj.get(key).is_some_and(|act_val| {
                         values_match_with_multiline_tolerance(exp_val, act_val)
                     })
                 })

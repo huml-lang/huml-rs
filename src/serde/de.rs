@@ -12,7 +12,7 @@
 //! - **Nested structures**: using proper HUML indentation
 //! - **Enums**: unit variants, struct variants, and tuple variants
 
-use crate::{parse_huml, HumlNumber, HumlValue};
+use crate::{HumlNumber, HumlValue, parse_huml};
 use serde::de::{self, Deserialize, DeserializeSeed, Visitor};
 use std::{fmt, str::FromStr};
 
@@ -105,20 +105,20 @@ impl FromStr for Deserializer {
         if let Ok(("", document)) = parse_huml(trimmed) {
             return Ok(Self::new(document.root));
         }
-        if let Ok((remaining, document)) = parse_huml(trimmed) {
-            if remaining.trim().is_empty() {
-                return Ok(Self::new(document.root));
-            }
+        if let Ok((remaining, document)) = parse_huml(trimmed)
+            && remaining.trim().is_empty()
+        {
+            return Ok(Self::new(document.root));
         }
 
         // Fallback: try document root parsing
         if let Ok(("", root)) = crate::parse_document_root(trimmed) {
             return Ok(Self::new(root));
         }
-        if let Ok((remaining, root)) = crate::parse_document_root(trimmed) {
-            if remaining.trim().is_empty() {
-                return Ok(Self::new(root));
-            }
+        if let Ok((remaining, root)) = crate::parse_document_root(trimmed)
+            && remaining.trim().is_empty()
+        {
+            return Ok(Self::new(root));
         }
 
         // Last resort: try individual value types
@@ -821,12 +821,12 @@ Pending: 42
         assert_eq!(i, 42);
 
         // Test float
-        let f: f64 = from_str("3.14").unwrap();
-        assert_eq!(f, 3.14);
+        let f: f64 = from_str("2.5").unwrap();
+        assert_eq!(f, 2.5);
 
         // Test boolean
         let b: bool = from_str("true").unwrap();
-        assert_eq!(b, true);
+        assert!(b);
 
         // Test list
         let list: Vec<i32> = from_str("1, 2, 3").unwrap();
@@ -870,7 +870,7 @@ features:: "auth", "logging", "metrics"
 
         assert_eq!(config.app_name, "My App");
         assert_eq!(config.port, 8080);
-        assert_eq!(config.debug, true);
+        assert!(config.debug);
         assert_eq!(config.features, vec!["auth", "logging", "metrics"]);
     }
 }

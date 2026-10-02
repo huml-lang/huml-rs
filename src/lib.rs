@@ -6,8 +6,8 @@ pub mod serde;
 pub mod standard_tests;
 
 pub use parser::{
-    parse_document_root, parse_empty_dict, parse_empty_list, parse_huml, parse_inline_dict,
-    parse_inline_list, parse_scalar, IResult, ParseError, HUML_VERSION,
+    HUML_VERSION, IResult, ParseError, parse_document_root, parse_empty_dict, parse_empty_list,
+    parse_huml, parse_inline_dict, parse_inline_list, parse_scalar,
 };
 
 #[derive(Debug, Clone, PartialEq)]

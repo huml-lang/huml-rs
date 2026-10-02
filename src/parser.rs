@@ -1,6 +1,6 @@
 use crate::{HumlDocument, HumlNumber, HumlValue};
-use std::collections::hash_map::Entry;
 use std::collections::HashMap;
+use std::collections::hash_map::Entry;
 use std::fmt;
 
 /// HUML specification version supported by this parser
@@ -1043,10 +1043,8 @@ impl<'a> Parser<'a> {
                 pos = self.skip_quoted(pos);
                 continue;
             }
-            if self.bytes[pos] == b':' {
-                if pos + 1 < self.len && self.bytes[pos + 1] != b':' {
-                    return true;
-                }
+            if self.bytes[pos] == b':' && pos + 1 < self.len && self.bytes[pos + 1] != b':' {
+                return true;
             }
             pos += 1;
         }
@@ -1070,9 +1068,7 @@ impl<'a> Parser<'a> {
 
     fn is_key_start(&self) -> bool {
         matches!(self.current_byte(), Some(b'"'))
-            || self
-                .current_byte()
-                .map_or(false, |b| b.is_ascii_alphabetic())
+            || self.current_byte().is_some_and(|b| b.is_ascii_alphabetic())
     }
 
     fn skip_spaces(&mut self) {
