@@ -193,4 +193,31 @@ key: [this is malformed
         // Should get duplicate key error, not a parse error from the malformed value
         assert!(err_msg.contains("duplicate key"));
     }
+
+    #[test]
+    fn lookahead_ignores_syntax_inside_strings() {
+        let (_, doc) = parse_huml(r#"urls:: "https://a.example", "b, c # d""#).unwrap();
+        assert_eq!(
+            doc.root,
+            HumlValue::Dict(HashMap::from([(
+                "urls".to_string(),
+                HumlValue::List(vec![
+                    HumlValue::String("https://a.example".into()),
+                    HumlValue::String("b, c # d".into()),
+                ]),
+            )]))
+        );
+
+        let (_, doc) = parse_huml(r#""a, b""#).unwrap();
+        assert_eq!(doc.root, HumlValue::String("a, b".into()));
+
+        let (_, doc) = parse_huml(r#""a:b", "c""#).unwrap();
+        assert_eq!(
+            doc.root,
+            HumlValue::List(vec![
+                HumlValue::String("a:b".into()),
+                HumlValue::String("c".into()),
+            ])
+        );
+    }
 }

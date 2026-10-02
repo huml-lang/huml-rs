@@ -61,7 +61,7 @@ pub mod ser;
 
 // Re-export common functions for convenience
 pub use de::{from_str, Deserializer, Error as DeError};
-pub use ser::{to_string, Error as SerError, Serializer};
+pub use ser::{to_string, Error as SerError};
 
 pub use de::Result as DeResult;
 

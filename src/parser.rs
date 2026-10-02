@@ -972,6 +972,7 @@ impl<'a> Parser<'a> {
         let mut pos = self.pos;
         while pos < self.len && self.bytes[pos] != b'\n' && self.bytes[pos] != b'#' {
             match self.bytes[pos] {
+                b'"' => pos = self.skip_quoted(pos),
                 b',' => return true,
                 b':' => return false,
                 _ => pos += 1,
@@ -988,6 +989,10 @@ impl<'a> Parser<'a> {
 
         while pos < self.len && self.bytes[pos] != b'\n' && self.bytes[pos] != b'#' {
             match self.bytes[pos] {
+                b'"' => {
+                    pos = self.skip_quoted(pos);
+                    continue;
+                }
                 b':' => {
                     if pos + 1 < self.len && self.bytes[pos + 1] == b':' {
                         has_double_colon = true;
@@ -1034,6 +1039,10 @@ impl<'a> Parser<'a> {
     fn has_inline_dict(&self) -> bool {
         let mut pos = self.pos;
         while pos < self.len && self.bytes[pos] != b'\n' && self.bytes[pos] != b'#' {
+            if self.bytes[pos] == b'"' {
+                pos = self.skip_quoted(pos);
+                continue;
+            }
             if self.bytes[pos] == b':' {
                 if pos + 1 < self.len && self.bytes[pos + 1] != b':' {
                     return true;
@@ -1042,6 +1051,21 @@ impl<'a> Parser<'a> {
             pos += 1;
         }
         false
+    }
+
+    /// Given the position of an opening `"`, return the position just past the closing
+    /// quote, so lookahead scans don't mistake `,`, `:` or `#` inside a string for syntax.
+    /// Stops at the end of the line if the string is unterminated.
+    fn skip_quoted(&self, mut pos: usize) -> usize {
+        pos += 1;
+        while pos < self.len && self.bytes[pos] != b'\n' {
+            match self.bytes[pos] {
+                b'\\' if pos + 1 < self.len && self.bytes[pos + 1] != b'\n' => pos += 2,
+                b'"' => return pos + 1,
+                _ => pos += 1,
+            }
+        }
+        pos
     }
 
     fn is_key_start(&self) -> bool {
