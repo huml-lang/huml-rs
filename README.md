@@ -14,7 +14,7 @@ Add this to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-huml-rs = "0.2.0"
+huml-rs = "0.3.0"
 serde = { version = "1.0", features = ["derive"] }
 ```
 

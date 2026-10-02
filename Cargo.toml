@@ -1,6 +1,6 @@
 [package]
 name = "huml-rs"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2024"
 license = "MIT"
 repository = "https://github.com/huml-lang/huml-rs"
@@ -8,6 +8,8 @@ homepage = "https://huml.io"
 description = "A Rust parser for HUML (Human-usable Markup Language)"
 keywords = ["huml", "huml-rs", "parsing", "markup"]
 categories = ["parser-implementations"]
+# Local Claude Code settings must never be published.
+exclude = [".claude/"]
 
 [dependencies]
 serde = { version = "1.0", features = ["derive"] }
